@@ -1,0 +1,152 @@
+{
+  "grade": "五年级",
+  "semester": "上册",
+  "units": [
+    {
+      "unit_code": "5A-U1",
+      "unit_name": "小数乘法",
+      "lessons": [
+        {
+          "lesson_id": "5A-U1-L1",
+          "title": "小数乘整数",
+          "knowledge_points": ["小数乘整数的意义", "竖式计算方法", "积的小数位数确定"],
+          "ability_level": "计算与应用",
+          "common_errors": ["小数点位置点错", "忘记数小数位数", "末尾对齐错误"],
+          "extension_topics": ["小数乘法在购物中的实际应用"]
+        },
+        {
+          "lesson_id": "5A-U1-L2",
+          "title": "小数乘小数",
+          "knowledge_points": ["小数乘小数的算理", "积的小数位数规律", "积的近似值"],
+          "ability_level": "计算与应用",
+          "common_errors": ["积的小数位数数错", "位数不够不会补0", "近似值四舍五入错误"],
+          "extension_topics": ["面积估算中的小数乘法"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U2",
+      "unit_name": "位置",
+      "lessons": [
+        {
+          "lesson_id": "5A-U2-L1",
+          "title": "用数对确定位置",
+          "knowledge_points": ["数对的概念", "列行的规定", "在方格纸上用数对表示位置"],
+          "ability_level": "理解与应用",
+          "common_errors": ["列行顺序混淆", "数对写反"],
+          "extension_topics": ["坐标系初步认识"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U3",
+      "unit_name": "小数除法",
+      "lessons": [
+        {
+          "lesson_id": "5A-U3-L1",
+          "title": "小数除以整数",
+          "knowledge_points": ["商的小数点对齐", "整数部分不够除补0", "除到末尾有余数补0继续除"],
+          "ability_level": "计算与应用",
+          "common_errors": ["商的小数点位置错误", "忘记补0"],
+          "extension_topics": ["小数除法在分配问题中的应用"]
+        },
+        {
+          "lesson_id": "5A-U3-L2",
+          "title": "一个数除以小数",
+          "knowledge_points": ["商不变性质", "除数转化为整数", "小数点移动规律"],
+          "ability_level": "计算与应用",
+          "common_errors": ["除数转化错误", "被除数小数点移动位数不对"],
+          "extension_topics": ["单位换算中的小数除法"]
+        },
+        {
+          "lesson_id": "5A-U3-L3",
+          "title": "循环小数",
+          "knowledge_points": ["循环小数的概念", "有限小数与无限小数", "循环节"],
+          "ability_level": "理解与判断",
+          "common_errors": ["循环小数判断错误", "循环节标注错误"],
+          "extension_topics": ["循环小数的四则运算"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U4",
+      "unit_name": "可能性",
+      "lessons": [
+        {
+          "lesson_id": "5A-U4-L1",
+          "title": "事件发生的可能性",
+          "knowledge_points": ["可能/一定/不可能", "可能性的大小", "游戏规则的公平性"],
+          "ability_level": "分析与判断",
+          "common_errors": ["可能性大小判断错误", "公平性理解偏差"],
+          "extension_topics": ["概率初步"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U5",
+      "unit_name": "简易方程",
+      "lessons": [
+        {
+          "lesson_id": "5A-U5-L1",
+          "title": "用字母表示数",
+          "knowledge_points": ["字母表示数的意义", "含字母式子的书写规范", "用字母表示数量关系"],
+          "ability_level": "抽象与建模",
+          "common_errors": ["书写格式不规范", "乘号省略规则混淆"],
+          "extension_topics": ["代数式初步"]
+        },
+        {
+          "lesson_id": "5A-U5-L2",
+          "title": "解方程",
+          "knowledge_points": ["等式的性质", "解方程的步骤", "检验方程的解"],
+          "ability_level": "抽象与建模",
+          "common_errors": ["移项不变号", "等式性质运用错误"],
+          "extension_topics": ["一元一次方程初步"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U6",
+      "unit_name": "多边形的面积",
+      "lessons": [
+        {
+          "lesson_id": "5A-U6-L1",
+          "title": "平行四边形的面积",
+          "knowledge_points": ["面积公式推导", "割补法", "底和高的对应关系"],
+          "ability_level": "推导与应用",
+          "common_errors": ["底高不对应", "面积和周长混淆"],
+          "extension_topics": ["不规则图形面积估算"]
+        },
+        {
+          "lesson_id": "5A-U6-L2",
+          "title": "三角形的面积",
+          "knowledge_points": ["面积公式推导", "两个三角形拼平行四边形", "底和高对应"],
+          "ability_level": "推导与应用",
+          "common_errors": ["忘记除以2", "底高不对应"],
+          "extension_topics": ["三角形面积在生活中的应用"]
+        },
+        {
+          "lesson_id": "5A-U6-L3",
+          "title": "梯形的面积",
+          "knowledge_points": ["面积公式推导", "两个梯形拼平行四边形", "上下底的确定"],
+          "ability_level": "推导与应用",
+          "common_errors": ["忘记除以2", "上下底混淆"],
+          "extension_topics": ["组合图形面积计算"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5A-U7",
+      "unit_name": "植树问题",
+      "lessons": [
+        {
+          "lesson_id": "5A-U7-L1",
+          "title": "植树问题",
+          "knowledge_points": ["两端都种:棵数=段数+1", "一端种:棵数=段数", "两端不种:棵数=段数-1", "环形植树"],
+          "ability_level": "建模与推广",
+          "common_errors": ["棵数与段数关系混淆", "环形和直线混淆"],
+          "extension_topics": ["敲钟问题、锯木头问题"]
+        }
+      ]
+    }
+  ]
+}

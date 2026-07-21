@@ -1,0 +1,530 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* === shadcn/ui color token mapping === */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* === Radius === */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* === Fonts === */
+  --font-sans:
+    'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  --font-serif:
+    'Noto Serif SC', 'Songti SC', 'SimSun', ui-serif, Georgia, Cambria,
+    'Times New Roman', Times, serif;
+  --font-hand:
+    'Caveat', 'Noto Sans SC', cursive;
+  --font-student:
+    'Nunito', 'Noto Sans SC', system-ui, sans-serif;
+
+  /* === Teacher shadows === */
+  --shadow-teacher-card: 2px 2px 0px rgba(60,60,60,0.08);
+  --shadow-teacher-float: 3px 4px 0px rgba(60,60,60,0.10);
+  --shadow-teacher-dialog: 4px 6px 0px rgba(60,60,60,0.12);
+
+  /* === Student (Zoo) shadows === */
+  --shadow-zoo-card: 0 4px 16px rgba(115,192,103,0.10), 0 1px 4px rgba(115,192,103,0.06);
+  --shadow-zoo-float: 0 8px 32px rgba(115,192,103,0.15), 0 2px 8px rgba(115,192,103,0.08);
+  --shadow-zoo-dialog: 0 12px 48px rgba(115,192,103,0.18), 0 4px 16px rgba(115,192,103,0.10);
+}
+
+/* =============================================
+   Default theme (teacher hand-drawn)
+   ============================================= */
+:root {
+  --radius: 0.625rem;
+  --background: #F5F0E6;
+  --foreground: #3D3D3D;
+  --card: #FDFBF7;
+  --card-foreground: #3D3D3D;
+  --popover: #FDFBF7;
+  --popover-foreground: #3D3D3D;
+  --primary: #5C6170;
+  --primary-foreground: #ffffff;
+  --secondary: #EDEBE6;
+  --secondary-foreground: #5C6170;
+  --muted: #F0EBE0;
+  --muted-foreground: #7A756D;
+  --accent: #C0785C;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --border: #B8B0A4;
+  --input: #D6D0C6;
+  --ring: #5C6170;
+  --chart-1: #C0785C;
+  --chart-2: #6B8F71;
+  --chart-3: #5C6170;
+  --chart-4: #8B7EC8;
+  --chart-5: #C4956A;
+  --sidebar: #F0EBE0;
+  --sidebar-foreground: #3D3D3D;
+  --sidebar-primary: #5C6170;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #EDEBE6;
+  --sidebar-accent-foreground: #5C6170;
+  --sidebar-border: #B8B0A4;
+  --sidebar-ring: #5C6170;
+}
+
+/* =============================================
+   Teacher theme (hand-drawn journal)
+   ============================================= */
+[data-theme="teacher"] {
+  --radius: 0.625rem;
+  --background: #F5F0E6;
+  --foreground: #3D3D3D;
+  --card: #FDFBF7;
+  --card-foreground: #3D3D3D;
+  --popover: #FDFBF7;
+  --popover-foreground: #3D3D3D;
+  --primary: #5C6170;
+  --primary-foreground: #ffffff;
+  --secondary: #EDEBE6;
+  --secondary-foreground: #5C6170;
+  --muted: #F0EBE0;
+  --muted-foreground: #7A756D;
+  --accent: #C0785C;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --border: #B8B0A4;
+  --input: #D6D0C6;
+  --ring: #5C6170;
+  --chart-1: #C0785C;
+  --chart-2: #6B8F71;
+  --chart-3: #5C6170;
+  --chart-4: #8B7EC8;
+  --chart-5: #C4956A;
+  --sidebar: #F0EBE0;
+  --sidebar-foreground: #3D3D3D;
+  --sidebar-primary: #5C6170;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #EDEBE6;
+  --sidebar-accent-foreground: #5C6170;
+  --sidebar-border: #B8B0A4;
+  --sidebar-ring: #5C6170;
+}
+
+/* =============================================
+   Student theme (math zoo)
+   ============================================= */
+[data-theme="student"] {
+  --radius: 1.5rem;
+  --background: #FFFDF7;
+  --foreground: #4A3728;
+  --card: #FFFFFF;
+  --card-foreground: #4A3728;
+  --popover: #FFFFFF;
+  --popover-foreground: #4A3728;
+  --primary: #73C067;
+  --primary-foreground: #2D5A27;
+  --secondary: #E0F2FA;
+  --secondary-foreground: #2A6F97;
+  --muted: #FFF8F0;
+  --muted-foreground: #8B7355;
+  --accent: #FFB86C;
+  --accent-foreground: #4A3728;
+  --destructive: #ef4444;
+  --border: #C8E6C0;
+  --input: #E0F0DC;
+  --ring: #73C067;
+  --chart-1: #73C067;
+  --chart-2: #95D8F0;
+  --chart-3: #FFB86C;
+  --chart-4: #F28B82;
+  --chart-5: #B5E5B5;
+  --sidebar: #E8F5E4;
+  --sidebar-foreground: #4A3728;
+  --sidebar-primary: #73C067;
+  --sidebar-primary-foreground: #2D5A27;
+  --sidebar-accent: #FFF0DB;
+  --sidebar-accent-foreground: #4A3728;
+  --sidebar-border: #C8E6C0;
+  --sidebar-ring: #73C067;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* =============================================
+   Teacher decorative classes
+   ============================================= */
+.paper-bg {
+  background-color: #F5F0E6;
+  background-image:
+    repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(180,170,155,0.15) 31px, rgba(180,170,155,0.15) 32px);
+}
+
+.paper-card {
+  background-color: #FDFBF7;
+  background-image:
+    radial-gradient(ellipse at 20% 50%, rgba(200,190,170,0.06) 0%, transparent 70%);
+}
+
+.sketchy {
+  border: 1.5px solid #B8B0A4;
+  border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+}
+
+.sketchy-sm {
+  border: 1.5px solid #B8B0A4;
+  border-radius: 150px 10px 180px 10px/10px 180px 10px 150px;
+}
+
+.sketchy-alt {
+  border: 1.5px solid #B8B0A4;
+  border-radius: 15px 255px 15px 225px/225px 15px 255px 15px;
+}
+
+.pencil-underline {
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #B8B0A4;
+  text-underline-offset: 4px;
+}
+
+/* =============================================
+   Student (Zoo) decorative classes
+   ============================================= */
+.zoo-bg {
+  background-color: #FFFDF7;
+  background-image: radial-gradient(circle, #E8F5E4 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+
+/* =============================================
+   Student scene backgrounds (full-page image)
+   Used as fixed background with content cards
+   floating on top. The decorative dot pattern is
+   kept on cards, not the page itself.
+   ============================================= */
+.student-scene {
+  position: relative;
+  background-color: #FFFDF7;
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: cover;
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+.student-scene::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: rgba(255, 253, 247, 0.55);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.student-scene > * {
+  position: relative;
+  z-index: 1;
+}
+
+.student-scene-home {
+  background-image: url('/student-bg/scene-1-home.jpg');
+}
+
+.student-scene-practice {
+  background-image: url('/student-bg/scene-2-practice.jpg');
+}
+
+.student-scene-achievements {
+  background-image: url('/student-bg/scene-3-achievements.jpg');
+}
+
+.student-scene-errors {
+  background-image: url('/student-bg/scene-3-achievements.jpg');
+}
+
+/* Glass card style for content on top of background image */
+.glass-card {
+  background-color: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  border: 1.5px solid rgba(200, 230, 192, 0.6);
+  border-radius: 1.5rem;
+  box-shadow:
+    0 8px 32px rgba(74, 55, 40, 0.08),
+    0 2px 8px rgba(74, 55, 40, 0.04);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.glass-card:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 12px 40px rgba(74, 55, 40, 0.12),
+    0 4px 12px rgba(74, 55, 40, 0.06);
+}
+
+.glass-card-solid {
+  background-color: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  border: 1.5px solid rgba(200, 230, 192, 0.7);
+  border-radius: 1.5rem;
+  box-shadow:
+    0 8px 32px rgba(74, 55, 40, 0.10),
+    0 2px 8px rgba(74, 55, 40, 0.05);
+}
+
+/* On mobile, disable fixed background to avoid iOS Safari jitter */
+@media (max-width: 768px) {
+  .student-scene {
+    background-attachment: scroll;
+    background-size: 100% auto;
+    background-position: center top;
+  }
+  .student-scene::before {
+    position: absolute;
+    inset: 0;
+    height: 100%;
+  }
+}
+
+.zoo-banner {
+  background: linear-gradient(135deg, #E0F2FA 0%, #E8F5E4 50%, #FFF0DB 100%);
+  border: 3px solid #C8E6C0;
+  border-radius: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.zoo-card {
+  border-radius: 1.5rem;
+  padding: 1.25rem;
+  box-shadow: 0 4px 16px rgba(115,192,103,0.10), 0 1px 4px rgba(115,192,103,0.06);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.zoo-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 32px rgba(115,192,103,0.15), 0 2px 8px rgba(115,192,103,0.08);
+}
+
+.zoo-btn {
+  border-radius: 1.25rem;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.zoo-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(115,192,103,0.2);
+}
+
+/* Cloud animation */
+@keyframes float-cloud {
+  0% { transform: translateX(-150px); }
+  100% { transform: translateX(calc(100% + 150px)); }
+}
+
+.zoo-cloud {
+  position: absolute;
+  background: rgba(255,255,255,0.85);
+  border-radius: 50px;
+  animation: float-cloud linear infinite;
+}
+
+.zoo-cloud::before {
+  content: '';
+  position: absolute;
+  background: inherit;
+  border-radius: 50%;
+  width: 60%;
+  height: 120%;
+  top: -50%;
+  left: 15%;
+}
+
+.zoo-cloud::after {
+  content: '';
+  position: absolute;
+  background: inherit;
+  border-radius: 50%;
+  width: 45%;
+  height: 100%;
+  top: -30%;
+  right: 15%;
+}
+
+/* Bunting flags */
+.bunting-flag {
+  width: 26px;
+  height: 34px;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+  flex-shrink: 0;
+}
+
+/* Bottom tab bar (student) */
+.bottom-tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #FFFFFF;
+  border-top: 2px solid #C8E6C0;
+  display: flex;
+  z-index: 50;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.bottom-tab-bar a {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #8B7355;
+  transition: color 0.2s;
+  gap: 0.25rem;
+}
+
+.bottom-tab-bar a.active {
+  color: #73C067;
+}
+
+.bottom-tab-bar a:hover {
+  color: #73C067;
+}
+
+/* Bounce animation for student elements */
+@keyframes bounce-soft {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.animate-bounce-soft {
+  animation: bounce-soft 2s ease-in-out infinite;
+}
+
+/* Wood texture card (student error book) */
+.wood-card {
+  background: linear-gradient(135deg, #FFF8F0 0%, #FFF0E0 100%);
+  border: 2px solid #E0D0C0;
+  border-radius: 1.5rem;
+  position: relative;
+}
+
+.wood-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  background: linear-gradient(90deg, #D4C4A8, #C8B898, #D4C4A8);
+  border-radius: 1.5rem 1.5rem 0 0;
+}
+
+/* =============================================
+   Student Practice Page
+   ============================================= */
+
+/* Venue card */
+.venue-card {
+  border-radius: 1rem;
+  padding: 1.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 2px solid;
+}
+
+.venue-card:hover {
+  transform: scale(1.02);
+  box-shadow: var(--shadow-zoo-float);
+}
+
+/* Difficulty card */
+.diff-card {
+  border-radius: 1rem;
+  padding: 1.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 2px solid;
+}
+
+.diff-card:hover {
+  transform: scale(1.02);
+  box-shadow: var(--shadow-zoo-float);
+}
+
+/* Progress pulse animation */
+@keyframes progress-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(255,184,108,0.25); }
+  50% { box-shadow: 0 0 0 8px rgba(255,184,108,0.15), 0 0 16px rgba(255,184,108,0.1); }
+}
+
+.progress-pulse {
+  animation: progress-pulse 2s ease-in-out infinite;
+}
+
+/* Answer input focus */
+.answer-input:focus {
+  border-color: #73C067 !important;
+  box-shadow: 0 0 0 4px rgba(115,192,103,0.15) !important;
+  outline: none;
+}
+
+/* Zoo banner scene */
+.zoo-scene {
+  border-radius: 1rem;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, #95D8F0 0%, #95D8F0 35%, #73C067 35%, #5CB850 100%);
+}

@@ -1,0 +1,166 @@
+{
+  "grade": "五年级",
+  "semester": "下册",
+  "units": [
+    {
+      "unit_code": "5B-U1",
+      "unit_name": "观察物体（三）",
+      "lessons": [
+        {
+          "lesson_id": "5B-U1-L1",
+          "title": "从不同方向观察物体",
+          "knowledge_points": ["正面/上面/侧面观察", "根据视图还原立体图形", "视图与实际物体的对应"],
+          "ability_level": "空间想象",
+          "common_errors": ["视图方向混淆", "还原立体图形困难"],
+          "extension_topics": ["三视图初步"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U2",
+      "unit_name": "因数与倍数",
+      "lessons": [
+        {
+          "lesson_id": "5B-U2-L1",
+          "title": "因数和倍数",
+          "knowledge_points": ["因数倍数的概念", "找一个数因数的方法", "找一个数倍数的方法"],
+          "ability_level": "概念与判断",
+          "common_errors": ["因数和倍数概念混淆", "遗漏因数"],
+          "extension_topics": ["完全数、亲和数"]
+        },
+        {
+          "lesson_id": "5B-U2-L2",
+          "title": "2、3、5的倍数特征",
+          "knowledge_points": ["2的倍数特征", "5的倍数特征", "3的倍数特征", "奇数偶数"],
+          "ability_level": "概念与判断",
+          "common_errors": ["3的倍数特征误用末位判断", "奇偶数与质合数混淆"],
+          "extension_topics": ["其他数的倍数特征规律探索"]
+        },
+        {
+          "lesson_id": "5B-U2-L3",
+          "title": "质数和合数",
+          "knowledge_points": ["质数合数的概念", "100以内质数表", "分解质因数"],
+          "ability_level": "概念与判断",
+          "common_errors": ["1既不是质数也不是合数", "质数与奇数混淆"],
+          "extension_topics": ["哥德巴赫猜想初步"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U3",
+      "unit_name": "长方体和正方体",
+      "lessons": [
+        {
+          "lesson_id": "5B-U3-L1",
+          "title": "长方体和正方体的认识",
+          "knowledge_points": ["面棱顶点的特征", "长方体和正方体的关系", "展开图"],
+          "ability_level": "理解与应用",
+          "common_errors": ["面棱顶点数混淆", "展开图判断错误"],
+          "extension_topics": ["正多面体初步"]
+        },
+        {
+          "lesson_id": "5B-U3-L2",
+          "title": "表面积",
+          "knowledge_points": ["表面积的计算方法", "实际问题的表面积变化", "单位换算"],
+          "ability_level": "计算与应用",
+          "common_errors": ["表面积公式记错", "实际问题中面数判断错误"],
+          "extension_topics": ["包装设计的表面积优化"]
+        },
+        {
+          "lesson_id": "5B-U3-L3",
+          "title": "体积",
+          "knowledge_points": ["体积的概念", "体积单位及换算", "长方体正方体体积公式", "容积"],
+          "ability_level": "计算与应用",
+          "common_errors": ["体积和表面积混淆", "单位换算错误", "容积和体积概念混淆"],
+          "extension_topics": ["不规则物体体积测量（排水法）"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U4",
+      "unit_name": "分数的意义和性质",
+      "lessons": [
+        {
+          "lesson_id": "5B-U4-L1",
+          "title": "分数的意义",
+          "knowledge_points": ["单位1的概念", "分数的意义", "分数与除法的关系"],
+          "ability_level": "理解与应用",
+          "common_errors": ["单位1理解偏差", "分数与除法关系混淆"],
+          "extension_topics": ["分数的历史发展"]
+        },
+        {
+          "lesson_id": "5B-U4-L2",
+          "title": "分数的基本性质",
+          "knowledge_points": ["分数基本性质", "约分", "通分", "比较分数大小"],
+          "ability_level": "理解与计算",
+          "common_errors": ["约分不彻底", "通分找错公分母", "分子分母同时乘除混淆"],
+          "extension_topics": ["等值分数的几何意义"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U5",
+      "unit_name": "图形的运动（三）",
+      "lessons": [
+        {
+          "lesson_id": "5B-U5-L1",
+          "title": "旋转",
+          "knowledge_points": ["旋转的三要素", "图形旋转的特征", "旋转和对称的关系"],
+          "ability_level": "空间想象",
+          "common_errors": ["旋转方向混淆", "旋转角度判断错误"],
+          "extension_topics": ["旋转对称图形"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U6",
+      "unit_name": "分数的加法和减法",
+      "lessons": [
+        {
+          "lesson_id": "5B-U6-L1",
+          "title": "同分母分数加减法",
+          "knowledge_points": ["同分母加减法则", "约分化简", "结果化为最简分数"],
+          "ability_level": "计算与应用",
+          "common_errors": ["分母也相加", "忘记约分"],
+          "extension_topics": ["分数加减混合运算"]
+        },
+        {
+          "lesson_id": "5B-U6-L2",
+          "title": "异分母分数加减法",
+          "knowledge_points": ["通分方法", "异分母加减法则", "混合运算顺序"],
+          "ability_level": "计算与应用",
+          "common_errors": ["通分错误", "运算顺序错误"],
+          "extension_topics": ["分数加减在实际问题中的应用"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U7",
+      "unit_name": "折线统计图",
+      "lessons": [
+        {
+          "lesson_id": "5B-U7-L1",
+          "title": "折线统计图",
+          "knowledge_points": ["折线统计图的特点", "绘制方法", "数据分析", "复式折线统计图"],
+          "ability_level": "分析与判断",
+          "common_errors": ["描点位置错误", "忘记标注数据", "复式图图例遗漏"],
+          "extension_topics": ["数据可视化与趋势预测"]
+        }
+      ]
+    },
+    {
+      "unit_code": "5B-U8",
+      "unit_name": "数学广角——找次品",
+      "lessons": [
+        {
+          "lesson_id": "5B-U8-L1",
+          "title": "找次品",
+          "knowledge_points": ["天平的使用", "分组策略", "最少的称量次数", "优化思想"],
+          "ability_level": "推理与优化",
+          "common_errors": ["分组策略不当", "没有找到最优方案"],
+          "extension_topics": ["信息论中的编码问题"]
+        }
+      ]
+    }
+  ]
+}
