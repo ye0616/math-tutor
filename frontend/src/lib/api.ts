@@ -49,11 +49,14 @@ async function fetchAPI(path: string, options?: RequestInit & { timeout?: number
     });
     clearTimeout(timeoutId);
     if (!res.ok) {
-      // 401: token 过期或用户不存在，清除登录状态并跳转首页
+      // 401: token 过期或无效，只清 token，不强制跳转（避免打断用户操作）
+      // 让上层组件根据 user 状态自然决定是否跳转
       if (res.status === 401 && typeof window !== 'undefined') {
+        console.warn('[API] 401, clearing token. path:', path);
         clearToken();
-        window.location.href = '/';
-        return Promise.reject(new Error('登录已过期，请重新登录'));
+        // 抛出错误，由调用方决定如何处理（不在此处强制跳转）
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || '登录已过期，请重新登录');
       }
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `API error: ${res.status}`);
@@ -255,6 +258,58 @@ export async function diagnoseError(
   return fetchAPI('/student/errors/diagnose', {
     method: 'POST',
     body: fd,
+  });
+}
+
+// 苏格拉底式分步引导改错（4 步：hint → checkpoint → method → practice）
+export interface GuidedStep {
+  step: number;
+  type: 'hint' | 'checkpoint' | 'method' | 'practice';
+  content: string;
+}
+
+export interface GuidedCorrectionResult {
+  error_id: number;
+  question_text: string;
+  student_answer: string;
+  correct_answer: string;
+  knowledge_point: string;
+  steps: GuidedStep[];
+  error_reason?: string;
+  full_solution?: string;
+}
+
+export async function guidedCorrection(errorId: number, token: string, questionText?: string): Promise<{ success: boolean; data?: GuidedCorrectionResult; message?: string }> {
+  return fetchAPI(`/student/errors/${errorId}/guided-correction`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ question_text: questionText || '' }),
+    timeout: 90000,
+  });
+}
+
+// 基于错题生成 3 道类似题
+export interface SimilarQuestion {
+  index: number;
+  question: string;
+  answer: string;
+  hint?: string;
+  explanation?: string;
+}
+
+export interface SimilarQuestionsResult {
+  error_id: number;
+  knowledge_point: string;
+  questions: SimilarQuestion[];
+}
+
+export async function similarQuestions(errorId: number, token: string, count: number = 3): Promise<{ success: boolean; data?: SimilarQuestionsResult; message?: string }> {
+  const fd = new FormData();
+  fd.append('authorization', token);
+  return fetchAPI(`/student/errors/${errorId}/similar-questions?count=${count}`, {
+    method: 'POST',
+    body: fd,
+    timeout: 90000,
   });
 }
 
@@ -1183,10 +1238,8 @@ export async function loadInquiry(
   token: string,
   lesson_code: string,
 ): Promise<{ success: boolean; data: any | null }> {
-  const form = new FormData();
-  form.append('lesson_code', lesson_code);
-  form.append('authorization', token);
-  return fetchAPI('/inquiry/load', { method: 'POST', body: form });
+  const params = new URLSearchParams({ lesson_code, authorization: token });
+  return fetchAPI(`/inquiry/load?${params.toString()}`, { method: 'GET' });
 }
 
 // ======================== 创意闯关 ========================
@@ -1238,8 +1291,12 @@ export async function startChallenge(
   const form = new FormData();
   form.append('unit_code', data.unit_code);
   form.append('lesson_code', data.lesson_code);
-  form.append('authorization', token);
-  return fetchAPI('/challenge/start', { method: 'POST', body: form, timeout: 120000 });
+  return fetchAPI('/challenge/start', {
+    method: 'POST',
+    body: form,
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 120000,
+  });
 }
 
 export async function pollChallengeTask(taskId: string): Promise<{ success: boolean; status: string; data?: ChallengeResult; error?: string }> {
@@ -1264,8 +1321,12 @@ export async function submitChallengeAnswer(
   form.append('student_answer', data.student_answer);
   form.append('correct_answer', data.correct_answer);
   form.append('knowledge_point', data.knowledge_point);
-  form.append('authorization', token);
-  return fetchAPI('/challenge/answer', { method: 'POST', body: form, timeout: 120000 });
+  return fetchAPI('/challenge/answer', {
+    method: 'POST',
+    body: form,
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 120000,
+  });
 }
 
 export async function submitSimilarAnswer(
@@ -1277,8 +1338,12 @@ export async function submitSimilarAnswer(
   form.append('student_answer', data.student_answer);
   form.append('correct_answer', data.correct_answer);
   form.append('knowledge_point', data.knowledge_point);
-  form.append('authorization', token);
-  return fetchAPI('/challenge/similar-answer', { method: 'POST', body: form, timeout: 60000 });
+  return fetchAPI('/challenge/similar-answer', {
+    method: 'POST',
+    body: form,
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 60000,
+  });
 }
 
 // ======================== 个人知识图谱 ========================
@@ -1329,7 +1394,7 @@ export async function getStudentRawData(studentId: number): Promise<{ success: b
 
 // ======================== 班级共性错题 ========================
 
-export async function getClassCommonErrors(classId: number): Promise<{
+export async function getClassCommonErrors(classId: number, assignmentIds?: number[]): Promise<{
   success: boolean;
   data: {
     student_count: number;
@@ -1343,7 +1408,12 @@ export async function getClassCommonErrors(classId: number): Promise<{
     };
   };
 }> {
-  return fetchAPI(`/knowledge/class/${classId}`, { timeout: 120000 });
+  const params = new URLSearchParams();
+  if (assignmentIds?.length) {
+    assignmentIds.forEach(id => params.append('assignment_ids', String(id)));
+  }
+  const query = params.toString();
+  return fetchAPI(`/knowledge/class/${classId}${query ? `?${query}` : ''}`, { timeout: 120000 });
 }
 
 export async function uploadTeacherQuestion(
@@ -1452,8 +1522,12 @@ export async function extractHomeworkFromImage(
 ): Promise<{ task_id: string; image_path: string }> {
   const form = new FormData();
   form.append('file', file);
-  form.append('authorization', token);
-  return fetchAPI('/teacher/homework/extract', { method: 'POST', body: form, timeout: 120000 });
+  return fetchAPI('/teacher/homework/extract', {
+    method: 'POST',
+    body: form,
+    timeout: 120000,
+    headers: { authorization: token },
+  });
 }
 
 export async function pollExtractTask(
@@ -1937,4 +2011,57 @@ export async function getMyGameRecords(token: string, gameType?: string, limit =
   params.set('limit', String(limit));
   params.set('authorization', token);
   return fetchAPI(`/fun-games/my-records?${params.toString()}`);
+}
+
+// ===== AI 智能体「小聪」API =====
+
+export type XiaocongStage = 'guide' | 'practice' | 'done';
+
+export interface XiaocongChatResult {
+  error_note_id: number;
+  student_id: number;
+  stage: XiaocongStage;
+  reply: string;
+  next_question: string | null;
+  next_answer: string | null;
+  next_knowledge_point: string | null;
+  session_round: number;
+}
+
+export async function chatWithXiaocong(
+  token: string,
+  errorNoteId: number,
+  message: string,
+  supplements?: { question_text?: string; correct_answer?: string; knowledge_point?: string }
+): Promise<XiaocongChatResult> {
+  return fetchAPI('/student/xiaocong/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+    },
+    body: JSON.stringify({
+      error_note_id: errorNoteId,
+      message,
+      ...(supplements || {}),
+    }),
+    timeout: 90000,
+  });
+}
+
+export async function resetXiaocongSession(token: string, errorNoteId: number) {
+  return fetchAPI('/student/xiaocong/reset', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+    },
+    body: JSON.stringify({ error_note_id: errorNoteId }),
+  });
+}
+
+export async function getXiaocongStatus(token: string, errorNoteId: number) {
+  return fetchAPI(`/student/xiaocong/status/${errorNoteId}`, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
 }

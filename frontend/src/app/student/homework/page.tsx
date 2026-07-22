@@ -16,6 +16,7 @@ import {
   askQA, getQATask, saveQASession, getQASimilar,
   RandomChallengeQuestion, QAResponse,
 } from '@/lib/api';
+import XiaocongDialog from '@/components/XiaocongDialog';
 
 type Stage = 'upload' | 'grading' | 'result' | 'history';
 
@@ -96,6 +97,12 @@ export default function StudentHomework() {
     try {
       const { task_id } = await uploadHomework(token, selectedFile, lessonTitle, selectedAssignment?.id);
       const taskResult = await pollGradingTask(token, task_id);
+      // 后端校验：识别出的题不在布置范围内 → 拦截
+      if (taskResult?.status === 'failed') {
+        setError(taskResult.error || '识别出的题目与老师布置的不一致，请重新拍照');
+        setStage('upload');
+        return;
+      }
       setResult(taskResult);
       setStage('result');
     } catch (e: any) {
@@ -395,6 +402,44 @@ function GradingResult({ result, token, userId, onReset, lessonCode }: { result:
   const isAllCorrect = total > 0 && correct === total;
   const lessonTitle = submission?.lesson_title || '';
 
+  // 把每题的 error_note_id 与 question 一一对应（按 question_index 顺序对齐）
+  const errorNoteIds: (number | null)[] = questions.map((q) => {
+    if (q.is_correct === 1) return null;
+    const idx = (q.question_index ?? 0);
+    return result.error_note_ids?.[idx] ?? null;
+  });
+
+  // 小聪对话框状态
+  const [xiaocongOpen, setXiaocongOpen] = useState(false);
+  const [xiaocongTarget, setXiaocongTarget] = useState<{
+    errorNoteId: number;
+    question: HomeworkQuestion;
+  } | null>(null);
+  const [autoPrompted, setAutoPrompted] = useState(false);
+
+  // 批改结果出来后自动弹出第一道错题的小聪对话框
+  useEffect(() => {
+    if (autoPrompted) return;
+    const firstWrongIdx = questions.findIndex((q) => q.is_correct !== 1);
+    if (firstWrongIdx >= 0) {
+      const errorNoteId = errorNoteIds[firstWrongIdx];
+      if (errorNoteId) {
+        setXiaocongTarget({ errorNoteId, question: questions[firstWrongIdx] });
+        setXiaocongOpen(true);
+        setAutoPrompted(true);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
+
+  const openXiaocongFor = (question: HomeworkQuestion) => {
+    const idx = question.question_index ?? 0;
+    const errorNoteId = errorNoteIds[idx];
+    if (!errorNoteId) return;
+    setXiaocongTarget({ errorNoteId, question });
+    setXiaocongOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       {/* 结果概览 */}
@@ -464,15 +509,35 @@ function GradingResult({ result, token, userId, onReset, lessonCode }: { result:
           逐题批改详情
         </h2>
         {questions.map((q, idx) => (
-          <QuestionCard key={q.id} question={q} index={idx} token={token} />
+          <QuestionCard
+            key={q.id}
+            question={q}
+            index={idx}
+            token={token}
+            errorNoteId={errorNoteIds[idx] ?? null}
+            onOpenXiaocong={openXiaocongFor}
+          />
         ))}
       </section>
+
+      {/* 小聪智能体对话框（错题引导） */}
+      {xiaocongTarget && (
+        <XiaocongDialog
+          open={xiaocongOpen}
+          errorNoteId={xiaocongTarget.errorNoteId}
+          questionText={xiaocongTarget.question.question_text}
+          studentAnswer={xiaocongTarget.question.student_answer}
+          correctAnswer={xiaocongTarget.question.correct_answer}
+          knowledgePoint={xiaocongTarget.question.knowledge_point}
+          onClose={() => setXiaocongOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
 // ============= 单题卡片组件 =============
-function QuestionCard({ question, index, token }: { question: HomeworkQuestion; index: number; token: string }) {
+function QuestionCard({ question, index, token, errorNoteId, onOpenXiaocong }: { question: HomeworkQuestion; index: number; token: string; errorNoteId: number | null; onOpenXiaocong: (q: HomeworkQuestion) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [correction, setCorrection] = useState<GuidedCorrection | null>(null);
   const [loadingCorrection, setLoadingCorrection] = useState(false);
@@ -586,6 +651,16 @@ function QuestionCard({ question, index, token }: { question: HomeworkQuestion; 
       {/* 错题操作按钮 */}
       {!isCorrect && (
         <div className="mt-4 flex flex-wrap gap-2">
+          {errorNoteId && (
+            <button
+              onClick={() => onOpenXiaocong(question)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02]"
+              style={{ background: 'linear-gradient(135deg, #FFB86C 0%, #FF7F50 100%)' }}
+            >
+              <Brain className="w-4 h-4" />
+              让小聪引导
+            </button>
+          )}
           <button
             onClick={handleGetCorrection}
             disabled={loadingCorrection}
@@ -1296,7 +1371,7 @@ function StudyQA({ token, userId, classId }: { token: string; userId: number; cl
           {similarQuestions.map((sq, i) => (
             <SimilarQuestionCard
               key={i}
-              question={{ question: sq.question, answer: sq.answer, knowledge_point: '' }}
+              question={{ index: i, question: sq.question, answer: sq.answer, knowledge_point: '' }}
               index={i}
             />
           ))}

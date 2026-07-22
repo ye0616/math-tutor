@@ -26,6 +26,19 @@ router = APIRouter()
 _grading_tasks: dict = {}
 
 
+def _normalize_q_text(text: str) -> str:
+    """归一化题目文本用于相似度匹配：去空白/标点/常见符号，转小写"""
+    if not text:
+        return ""
+    s = str(text).lower()
+    # 去常见空白和数学符号
+    for ch in [" ", "\t", "\n", "\r", "。", "，", ",", ".", "?", "？", "!", "！",
+               ":", "：", ";", "；", "(", ")", "（", "）", "[", "]", "【", "】",
+               "{", "}", "×", "x", "÷", "/", "+", "-", "=", "·", "*", "'", '"']:
+        s = s.replace(ch, "")
+    return s
+
+
 def get_student_id(authorization: str) -> int:
     """验证学生身份，返回 user_id"""
     payload = get_user_from_token(authorization or "")
@@ -105,7 +118,69 @@ def upload_homework(
             correct_count = sum(1 for q in questions if q.get("is_correct"))
             total_count = len(questions)
 
-            grading_json = json.dumps(result, ensure_ascii=False)
+            # ===== 题目对齐校验：识别出的题是否与老师布置的题一致 =====
+            aligned_questions = questions
+            if assignment_id and total_count > 0:
+                with get_db() as db:
+                    row = db.execute(
+                        "SELECT questions_json, title FROM assignments WHERE id=?",
+                        (assignment_id,),
+                    ).fetchone()
+                if row and row["questions_json"]:
+                    try:
+                        assigned = json.loads(row["questions_json"])
+                    except Exception:
+                        assigned = []
+                    assigned_texts: list[str] = []
+                    for item in assigned:
+                        if isinstance(item, dict):
+                            txt = (
+                                item.get("q")
+                                or item.get("question_text")
+                                or item.get("question")
+                                or ""
+                            )
+                            if txt:
+                                assigned_texts.append(_normalize_q_text(str(txt)))
+
+                    if assigned_texts:
+                        # 校验：识别出的题必须至少有一道与布置题匹配
+                        def _matches_any(norm: str) -> bool:
+                            return any(
+                                (norm and (a in norm or norm in a))
+                                for a in assigned_texts
+                            )
+
+                        aligned_questions = [
+                            q for q in questions
+                            if _matches_any(_normalize_q_text(str(q.get("question_text", ""))))
+                        ]
+
+                        # 完全对不上 → 整批拦截
+                        if not aligned_questions:
+                            _grading_tasks[task_id]["status"] = "failed"
+                            _grading_tasks[task_id]["error"] = (
+                                f"识别出的题目不在「{row['title']}」布置范围内，"
+                                f"请重新拍照或与老师确认作业内容"
+                            )
+                            with get_db() as db:
+                                db.execute(
+                                    "UPDATE homework_submissions SET status='failed', summary=? WHERE id=?",
+                                    (_grading_tasks[task_id]["error"], submission_id),
+                                )
+                            return
+
+                        # 部分对齐，丢弃未匹配的题
+                        if len(aligned_questions) < total_count:
+                            questions = aligned_questions
+                            total_count = len(questions)
+                            correct_count = sum(1 for q in questions if q.get("is_correct"))
+                            summary = (
+                                f"已剔除 {total_count - len(aligned_questions)} 张识别错误的题目，"
+                                f"本次共批改 {len(aligned_questions)} 道"
+                            )
+
+            grading_json = json.dumps({"questions": questions, "summary": summary, "success": True}, ensure_ascii=False)
 
             with get_db() as db:
                 db.execute(
@@ -115,43 +190,48 @@ def upload_homework(
                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), submission_id),
                 )
 
-                # 逐题保存到 homework_questions 表 + 错题自动入错题本
-                for q in questions:
-                    cursor = db.execute(
-                        "INSERT INTO homework_questions "
-                        "(submission_id, student_id, question_index, question_text, student_answer, "
-                        "correct_answer, is_correct, analysis, error_type, correction_hint, knowledge_point) "
+            # 逐题保存到 homework_questions 表 + 错题自动入错题本
+            error_note_ids: list[int] = []
+            for q in questions:
+                cursor = db.execute(
+                    "INSERT INTO homework_questions "
+                    "(submission_id, student_id, question_index, question_text, student_answer, "
+                    "correct_answer, is_correct, analysis, error_type, correction_hint, knowledge_point) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (submission_id, student_id, q.get("index", 0),
+                     q.get("question_text", ""), q.get("student_answer", ""),
+                     q.get("correct_answer", ""), int(q.get("is_correct", False)),
+                     q.get("analysis", ""), q.get("error_type", ""),
+                     q.get("correction_hint", ""), q.get("knowledge_point", "")),
+                )
+                question_id = cursor.lastrowid
+
+                # 错题自动加入错题本（记录 error_note_id 用于弹小聪）
+                if not q.get("is_correct"):
+                    en_cursor = db.execute(
+                        "INSERT INTO error_notes "
+                        "(student_id, question_id, question_text, student_answer, correct_answer, "
+                        "analysis, knowledge_point, error_type, source, homework_question_id, status) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (submission_id, student_id, q.get("index", 0),
-                         q.get("question_text", ""), q.get("student_answer", ""),
-                         q.get("correct_answer", ""), int(q.get("is_correct", False)),
-                         q.get("analysis", ""), q.get("error_type", ""),
-                         q.get("correction_hint", ""), q.get("knowledge_point", "")),
+                        (student_id, None,  # question_id=NULL 因为不来自 questions 表
+                         q.get("question_text", ""),
+                         q.get("student_answer", ""),
+                         q.get("correct_answer", ""),
+                         q.get("analysis", ""),
+                         q.get("knowledge_point", ""),
+                         q.get("error_type", ""),
+                         "homework",  # source 标记为作业来源
+                         question_id,
+                         "unresolved"),
                     )
-                    question_id = cursor.lastrowid
+                    error_note_ids.append(en_cursor.lastrowid)
+                    # 做错题自动录入错题本（不加积分，积分统一在下面加）
 
-                    # 错题自动加入错题本
-                    if not q.get("is_correct"):
-                        db.execute(
-                            "INSERT INTO error_notes "
-                            "(student_id, question_id, question_text, student_answer, correct_answer, "
-                            "analysis, knowledge_point, error_type, source, homework_question_id, status) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (student_id, None,  # question_id=NULL 因为不来自 questions 表
-                             q.get("question_text", ""),
-                             q.get("student_answer", ""),
-                             q.get("correct_answer", ""),
-                             q.get("analysis", ""),
-                             q.get("knowledge_point", ""),
-                             q.get("error_type", ""),
-                             "homework",  # source 标记为作业来源
-                             question_id,
-                             "unresolved"),
-                        )
-                        # 做错题自动录入错题本（不加积分，积分统一在下面加）
+            # 完成当天复习任务 +0.5分
+            add_points(db, student_id, 0.5, "完成学习作业")
 
-                # 完成当天复习任务 +0.5分
-                add_points(db, student_id, 0.5, "完成学习作业")
+            # 把 error_note_ids 回传给前端（按 question_index 顺序）
+            _grading_tasks[task_id]["error_note_ids"] = error_note_ids
 
             _grading_tasks[task_id]["status"] = "completed"
             _grading_tasks[task_id]["submission_id"] = submission_id
@@ -219,6 +299,8 @@ def get_grading_task(task_id: str, authorization: str = Header(None)):
             correct = sum(1 for q in questions if q["is_correct"])
             total = len(questions)
             resp["accuracy"] = round(correct / max(1, total) * 100, 1)
+            # 返回错题 error_note_id 列表（按 question_index 顺序对齐）
+            resp["error_note_ids"] = task.get("error_note_ids", [])
 
     elif task["status"] == "failed":
         resp["error"] = task.get("error", "批改失败")

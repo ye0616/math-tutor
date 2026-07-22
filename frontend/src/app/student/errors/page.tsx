@@ -6,12 +6,15 @@ import {
   Stethoscope, AlertCircle, Heart, ChevronDown, ChevronUp, Sparkles,
   Activity, HeartPulse, Filter, Loader2, RefreshCw, Lightbulb,
   Zap, Target, Check, X, Trophy, Camera, Upload, Flame, Award, BookOpen,
+  Brain, ArrowRight, ArrowLeft,
 } from 'lucide-react';
 import {
   getStoredUser, getToken, fetchErrors, diagnoseError, fetchStudentDashboard,
   mistakeBreakthrough, submitBreakthroughAnswer, resolveErrorNote,
   uploadErrorPhoto, fetchReheatList, generateExpansion, getExpansionTask, submitExpansionAnswer,
+  guidedCorrection, similarQuestions,
 } from '@/lib/api';
+import XiaocongDialog from '@/components/XiaocongDialog';
 
 interface ErrorItem {
   id: number;
@@ -117,6 +120,57 @@ export default function StudentErrors() {
   const [viewMode, setViewMode] = useState<'venue' | 'knowledge'>('venue');
   const [kpGroups, setKpGroups] = useState<any[]>([]);
 
+  // ===== 苏格拉底式分步引导 =====
+  const [guidedOpen, setGuidedOpen] = useState(false);
+  const [guidedLoading, setGuidedLoading] = useState(false);
+  const [guidedData, setGuidedData] = useState<{
+    error_id: number;
+    steps: { step: number; type: string; content: string }[];
+    error_reason?: string;
+    full_solution?: string;
+    question_text?: string;
+    student_answer?: string;
+    correct_answer?: string;
+    knowledge_point?: string;
+  } | null>(null);
+  const [guidedStepIdx, setGuidedStepIdx] = useState(0); // 当前展示到第几步
+  const [guidedCompleted, setGuidedCompleted] = useState(false);
+  // 题目缺失时的补题输入
+  const [pendingQuestionErrorId, setPendingQuestionErrorId] = useState<number | null>(null);
+  const [pendingQuestionText, setPendingQuestionText] = useState('');
+
+  // ===== 小聪智能体（多轮对话引导） =====
+  const [xiaocongOpen, setXiaocongOpen] = useState(false);
+  const [xiaocongTarget, setXiaocongTarget] = useState<{
+    errorNoteId: number;
+    questionText: string;
+    studentAnswer: string;
+    correctAnswer: string;
+    knowledgePoint: string;
+  } | null>(null);
+  const openXiaocongForError = (error: ErrorItem) => {
+    setXiaocongTarget({
+      errorNoteId: error.id,
+      questionText: error.question_text || error.content || '',
+      studentAnswer: error.student_answer || '',
+      correctAnswer: error.correct_answer || error.question_answer || '',
+      knowledgePoint: error.knowledge_point || '',
+    });
+    setXiaocongOpen(true);
+  };
+
+  // ===== 类似题巩固 =====
+  const [similarOpen, setSimilarOpen] = useState(false);
+  const [similarLoading, setSimilarLoading] = useState(false);
+  const [similarData, setSimilarData] = useState<{
+    questions: { index: number; question: string; answer: string; hint?: string; explanation?: string }[];
+    knowledge_point: string;
+  } | null>(null);
+  const [similarAnswers, setSimilarAnswers] = useState<Record<number, string>>({});
+  const [similarResults, setSimilarResults] = useState<Record<number, boolean | null>>({});
+  const [similarCurrentIdx, setSimilarCurrentIdx] = useState(0);
+  const [similarDone, setSimilarDone] = useState(false);
+
   useEffect(() => {
     const u = getStoredUser();
     const t = getToken();
@@ -197,6 +251,142 @@ export default function StudentErrors() {
     } finally {
       setDiagnosing((prev) => ({ ...prev, [error.id]: false }));
     }
+  };
+
+  // ===== 苏格拉底式分步引导改错 =====
+  const handleStartGuided = async (error: ErrorItem, supplementText?: string) => {
+    if (!token) {
+      alert('请先登录');
+      return;
+    }
+    setGuidedLoading(true);
+    setGuidedOpen(true);
+    setGuidedData(null);
+    setGuidedStepIdx(0);
+    setGuidedCompleted(false);
+    try {
+      const res = await guidedCorrection(error.id, token, supplementText);
+      console.log('[guided] response:', res);
+      if (res?.success && res.data) {
+        const d = res.data;
+        if (Array.isArray(d.steps) && d.steps.length > 0) {
+          setGuidedData(d);
+          setGuidedStepIdx(0);
+        } else {
+          alert('AI 暂时无法生成引导，请稍后重试');
+          setGuidedOpen(false);
+        }
+      } else if (res?.message?.includes('缺少题目') || res?.message?.includes('缺少')) {
+        // 后端 400：打开补题输入框
+        setGuidedOpen(false);
+        setPendingQuestionErrorId(error.id);
+        setPendingQuestionText(supplementText || '');
+      } else {
+        alert(res?.message || 'AI 引导生成失败');
+        setGuidedOpen(false);
+      }
+    } catch (e: any) {
+      console.error('[guided] error:', e);
+      const msg = e?.message || '';
+      if (msg.includes('缺少题目') || msg.includes('400')) {
+        setGuidedOpen(false);
+        setPendingQuestionErrorId(error.id);
+        setPendingQuestionText(supplementText || '');
+      } else {
+        alert(msg || 'AI 引导暂时不可用');
+        setGuidedOpen(false);
+      }
+    } finally {
+      setGuidedLoading(false);
+    }
+  };
+
+  const handlePendingSubmit = () => {
+    const text = pendingQuestionText.trim();
+    if (!text) { alert('请输入题目内容'); return; }
+    const id = pendingQuestionErrorId;
+    if (!id) return;
+    setPendingQuestionErrorId(null);
+    setPendingQuestionText('');
+    const err = errors.find(e => e.id === id);
+    if (err) handleStartGuided(err, text);
+  };
+
+  const handleGuidedNext = () => {
+    if (!guidedData) return;
+    if (guidedStepIdx < guidedData.steps.length - 1) {
+      setGuidedStepIdx(guidedStepIdx + 1);
+    } else {
+      setGuidedCompleted(true);
+    }
+  };
+
+  const handleGuidedPrev = () => {
+    if (guidedStepIdx > 0) {
+      setGuidedStepIdx(guidedStepIdx - 1);
+      setGuidedCompleted(false);
+    }
+  };
+
+  const handleGuidedClose = () => {
+    setGuidedOpen(false);
+  };
+
+  // 完成引导后，加载类似题巩固
+  const handleStartSimilar = async () => {
+    if (!guidedData || !token) return;
+    setSimilarOpen(true);
+    setSimilarLoading(true);
+    setSimilarData(null);
+    setSimilarAnswers({});
+    setSimilarResults({});
+    setSimilarCurrentIdx(0);
+    setSimilarDone(false);
+    try {
+      const res = await similarQuestions(guidedData.error_id, token, 3);
+      console.log('[similar] response:', res);
+      if (res?.success && res.data) {
+        const d = res.data;
+        if (Array.isArray(d.questions) && d.questions.length > 0) {
+          setSimilarData(d);
+        } else {
+          alert('类似题生成失败');
+          setSimilarOpen(false);
+        }
+      } else {
+        alert(res?.message || '类似题生成失败');
+        setSimilarOpen(false);
+      }
+    } catch (e: any) {
+      console.error('[similar] error:', e);
+      alert(e?.message || '类似题生成失败');
+      setSimilarOpen(false);
+    } finally {
+      setSimilarLoading(false);
+    }
+  };
+
+  const handleSimilarSubmit = () => {
+    if (!similarData) return;
+    const q = similarData.questions[similarCurrentIdx];
+    if (!q) return;
+    const studentAns = (similarAnswers[q.index] || '').trim();
+    const correctAns = q.answer.trim();
+    const isCorrect = studentAns === correctAns;
+    setSimilarResults((prev) => ({ ...prev, [q.index]: isCorrect }));
+  };
+
+  const handleSimilarNext = () => {
+    if (!similarData) return;
+    if (similarCurrentIdx < similarData.questions.length - 1) {
+      setSimilarCurrentIdx(similarCurrentIdx + 1);
+    } else {
+      setSimilarDone(true);
+    }
+  };
+
+  const handleSimilarClose = () => {
+    setSimilarOpen(false);
   };
 
   // ===== 错题突破 =====
@@ -1068,6 +1258,39 @@ export default function StudentErrors() {
                       </button>
                       {token && (
                         <button
+                          onClick={() => openXiaocongForError(error)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02] active:scale-[0.98]"
+                          style={{
+                            background: 'linear-gradient(135deg, #FFB86C 0%, #FF7F50 100%)',
+                            boxShadow: '0 4px 14px rgba(255, 184, 108, 0.35)',
+                          }}
+                        >
+                          <Brain className="w-4 h-4" />
+                          🦊 让小聪对话引导
+                        </button>
+                      )}
+                      {token && (
+                        <button
+                          onClick={() => {
+                            // 优先用 error.question_text；若空则用后端联表 questions.content 兜底
+                            const text = (error.question_text || error.content || '').trim();
+                            handleStartGuided(error, text);
+                          }}
+                          disabled={guidedLoading}
+                          data-testid={`btn-guided-${error.id}`}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60"
+                          style={{
+                            background: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)',
+                            color: '#FFFFFF',
+                            boxShadow: '0 4px 14px rgba(139, 92, 246, 0.3)',
+                          }}
+                        >
+                          <Brain className="w-4 h-4" />
+                          AI 分步引导
+                        </button>
+                      )}
+                      {token && (
+                        <button
                           onClick={() => handleResolve(error.id)}
                           className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold transition-all hover:scale-[1.02]"
                           style={{
@@ -1127,13 +1350,384 @@ export default function StudentErrors() {
         </section>
       )}
 
+      {/* ============= 苏格拉底式分步引导 Modal ============= */}
+      {guidedOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={handleGuidedClose}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-3xl shadow-2xl"
+            style={{ background: 'linear-gradient(135deg, #FAF7F2 0%, #F5EDE0 100%)', border: '2px solid #C8A951' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between p-5 border-b" style={{ background: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)', borderColor: 'rgba(255,255,255,0.2)' }}>
+              <div className="flex items-center gap-2">
+                <Brain className="w-6 h-6 text-white" />
+                <h2 className="text-xl font-bold text-white">AI 苏格拉底式引导</h2>
+              </div>
+              <button
+                onClick={handleGuidedClose}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white hover:bg-white/20 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Loading */}
+            {guidedLoading && (
+              <div className="p-10 text-center">
+                <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: '#8B5CF6' }} />
+                <p className="text-base font-semibold mb-2" style={{ color: '#5C6170' }}>AI 正在为你设计分步引导方案...</p>
+                <p className="text-sm" style={{ color: '#7A756D' }}>大约需要 30~60 秒</p>
+              </div>
+            )}
+
+            {/* Steps Display */}
+            {!guidedLoading && guidedData && (
+              <div className="p-6 space-y-4">
+                {/* Question preview */}
+                <div className="rounded-2xl p-4" style={{ background: 'rgba(139, 92, 246, 0.08)', border: '1.5px solid rgba(139, 92, 246, 0.3)' }}>
+                  <p className="text-xs font-bold mb-1" style={{ color: '#8B5CF6' }}>📝 你的错题</p>
+                  <p className="text-sm mb-2" style={{ color: '#4A3728' }}>{guidedData.question_text}</p>
+                  <div className="flex items-center gap-3 text-xs flex-wrap">
+                    <span style={{ color: '#D04040' }}>你的答案：<span className="font-bold" style={{ textDecoration: 'line-through' }}>{guidedData.student_answer}</span></span>
+                    {guidedData.knowledge_point && (
+                      <span className="px-2 py-0.5 rounded" style={{ background: 'rgba(139, 92, 246, 0.15)', color: '#8B5CF6' }}>
+                        {guidedData.knowledge_point}
+                      </span>
+                    )}
+                  </div>
+                  {guidedData.error_reason && (
+                    <p className="text-xs mt-2" style={{ color: '#7A756D' }}>
+                      💡 错误原因：{guidedData.error_reason}
+                    </p>
+                  )}
+                </div>
+
+                {/* Progress */}
+                <div className="flex items-center gap-1">
+                  {guidedData.steps.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 h-2 rounded-full transition-all"
+                      style={{
+                        background: i <= guidedStepIdx ? '#8B5CF6' : 'rgba(139, 92, 246, 0.2)',
+                      }}
+                    />
+                  ))}
+                </div>
+
+                {/* Current step */}
+                {!guidedCompleted && guidedData.steps[guidedStepIdx] && (() => {
+                  const step = guidedData.steps[guidedStepIdx];
+                  const typeLabel: Record<string, { text: string; bg: string; color: string }> = {
+                    hint: { text: '💡 第一步：提示', bg: 'rgba(255, 184, 108, 0.15)', color: '#FF9A4D' },
+                    checkpoint: { text: '❓ 第二步：检查点', bg: 'rgba(212, 168, 67, 0.15)', color: '#B8941F' },
+                    method: { text: '🛠️ 第三步：方法', bg: 'rgba(107, 143, 113, 0.15)', color: '#5C8A5A' },
+                    practice: { text: '🎯 第四步：小练习', bg: 'rgba(192, 120, 92, 0.15)', color: '#A0553D' },
+                  };
+                  const meta = typeLabel[step.type] || { text: `第 ${step.step} 步`, bg: '#F0F0F0', color: '#666' };
+                  return (
+                    <div className="rounded-2xl p-5" style={{ background: '#FFFFFF', border: '2px solid rgba(139, 92, 246, 0.2)' }}>
+                      <div className="inline-block px-3 py-1 rounded-full text-xs font-bold mb-3" style={{ background: meta.bg, color: meta.color }}>
+                        {meta.text}
+                      </div>
+                      <p className="text-base leading-relaxed" style={{ color: '#3D3D3D' }}>
+                        {step.content}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {/* Completed: show full solution */}
+                {guidedCompleted && (
+                  <div className="space-y-3">
+                    <div className="rounded-2xl p-4" style={{ background: 'linear-gradient(135deg, rgba(115, 192, 103, 0.15), rgba(139, 92, 246, 0.08))', border: '2px solid rgba(115, 192, 103, 0.4)' }}>
+                      <p className="text-base font-bold mb-2 flex items-center gap-2" style={{ color: '#2D5A27' }}>
+                        <Check className="w-5 h-5" />
+                        🎉 引导完成！完整解题过程：
+                      </p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: '#4A3728' }}>
+                        {guidedData.full_solution || `正确答案是：${guidedData.correct_answer}`}
+                      </p>
+                      <div className="mt-3 pt-3 border-t flex items-center gap-2 text-xs" style={{ borderColor: 'rgba(115, 192, 103, 0.3)', color: '#7A756D' }}>
+                        <span>正确答案：</span>
+                        <span className="font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(115, 192, 103, 0.2)', color: '#2D5A27' }}>
+                          {guidedData.correct_answer}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Footer buttons */}
+                <div className="flex items-center justify-between pt-2">
+                  <button
+                    onClick={handleGuidedPrev}
+                    disabled={guidedStepIdx === 0 || guidedCompleted}
+                    className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium transition-all hover:opacity-80 disabled:opacity-30"
+                    style={{ background: 'rgba(0,0,0,0.05)', color: '#5C6170' }}
+                  >
+                    <ArrowLeft className="w-4 h-4" /> 上一步
+                  </button>
+
+                  {!guidedCompleted ? (
+                    <button
+                      onClick={handleGuidedNext}
+                      className="inline-flex items-center gap-1 px-5 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02]"
+                      style={{ background: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)' }}
+                    >
+                      {guidedStepIdx < guidedData.steps.length - 1 ? (
+                        <>想好了，下一步 <ArrowRight className="w-4 h-4" /></>
+                      ) : (
+                        <>完成引导 <Check className="w-4 h-4" /></>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleStartSimilar}
+                      className="inline-flex items-center gap-1 px-5 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02]"
+                      style={{ background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)' }}
+                    >
+                      <Target className="w-4 h-4" /> 来做几道巩固题
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============= 补题输入 Modal（OCR 失败等场景） ============= */}
+      {pendingQuestionErrorId !== null && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={() => { setPendingQuestionErrorId(null); setPendingQuestionText(''); }}
+        >
+          <div
+            className="w-full max-w-lg rounded-3xl shadow-2xl p-6"
+            style={{ background: 'linear-gradient(135deg, #FAF7F2 0%, #F5EDE0 100%)', border: '2px solid #C8A951' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-3">
+              <Lightbulb className="w-5 h-5" style={{ color: '#C8A951' }} />
+              <h2 className="text-lg font-bold" style={{ color: '#4A3728' }}>补一下题目内容</h2>
+            </div>
+            <p className="text-sm mb-3" style={{ color: '#7A5C44' }}>
+              这道错题在识别时题目文字没存下来，把题目原文贴进来 AI 就能开始引导啦～
+            </p>
+            <textarea
+              value={pendingQuestionText}
+              onChange={(e) => setPendingQuestionText(e.target.value)}
+              placeholder="例如：一个长方形的长是 6.5 米，宽是 3 米，面积是多少？"
+              rows={5}
+              className="w-full p-3 rounded-xl outline-none resize-none text-sm"
+              style={{ border: '1.5px solid #E5D5BA', background: '#FFFFFF', color: '#4A3728' }}
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="px-4 py-2 rounded-xl text-sm font-bold"
+                style={{ background: '#FFFFFF', border: '1.5px solid #E5D5BA', color: '#7A5C44' }}
+                onClick={() => { setPendingQuestionErrorId(null); setPendingQuestionText(''); }}
+              >
+                取消
+              </button>
+              <button
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white"
+                style={{ background: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)' }}
+                onClick={handlePendingSubmit}
+              >
+                开始 AI 引导
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============= 类似题巩固 Modal ============= */}
+      {similarOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0, 0, 0, 0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={handleSimilarClose}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-3xl shadow-2xl"
+            style={{ background: 'linear-gradient(135deg, #FAF7F2 0%, #E8F0E5 100%)', border: '2px solid #73C067' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="sticky top-0 z-10 flex items-center justify-between p-5 border-b" style={{ background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)', borderColor: 'rgba(255,255,255,0.2)' }}>
+              <div className="flex items-center gap-2">
+                <Target className="w-6 h-6 text-white" />
+                <h2 className="text-xl font-bold text-white">巩固练习</h2>
+              </div>
+              <button
+                onClick={handleSimilarClose}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white hover:bg-white/20 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Loading */}
+            {similarLoading && (
+              <div className="p-10 text-center">
+                <Loader2 className="w-12 h-12 mx-auto mb-4 animate-spin" style={{ color: '#73C067' }} />
+                <p className="text-base font-semibold mb-2" style={{ color: '#5C6170' }}>AI 正在生成类似题...</p>
+              </div>
+            )}
+
+            {/* Questions */}
+            {!similarLoading && similarData && similarData.questions.length > 0 && (() => {
+              const currentQ = similarData.questions[similarCurrentIdx];
+              if (!currentQ) return null;
+              const result = similarResults[currentQ.index];
+              const answered = result !== undefined;
+              return (
+                <div className="p-6 space-y-4">
+                  {/* Progress */}
+                  <div className="flex items-center justify-between text-xs">
+                    <span style={{ color: '#7A756D' }}>
+                      第 {similarCurrentIdx + 1} / {similarData.questions.length} 题
+                    </span>
+                    <span style={{ color: '#7A756D' }}>
+                      {similarData.knowledge_point && `知识点：${similarData.knowledge_point}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {similarData.questions.map((_, i) => (
+                      <div
+                        key={i}
+                        className="flex-1 h-2 rounded-full transition-all"
+                        style={{
+                          background: i < similarCurrentIdx ? '#73C067' : i === similarCurrentIdx ? '#5CAF50' : 'rgba(115, 192, 103, 0.2)',
+                        }}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Question */}
+                  <div className="rounded-2xl p-5" style={{ background: '#FFFFFF', border: '1.5px solid rgba(115, 192, 103, 0.3)' }}>
+                    <p className="text-base font-semibold mb-4" style={{ color: '#3D3D3D' }}>
+                      <span className="inline-flex items-center justify-center w-7 h-7 rounded-full mr-2 text-sm font-bold" style={{ background: 'rgba(115, 192, 103, 0.2)', color: '#2D5A27' }}>
+                        {currentQ.index}
+                      </span>
+                      {currentQ.question}
+                    </p>
+                    <input
+                      type="text"
+                      value={similarAnswers[currentQ.index] || ''}
+                      onChange={(e) => setSimilarAnswers((prev) => ({ ...prev, [currentQ.index]: e.target.value }))}
+                      disabled={answered}
+                      placeholder="请输入答案..."
+                      className="w-full px-4 py-3 rounded-xl text-base"
+                      style={{ background: '#FAF7F2', border: '1.5px solid rgba(115, 192, 103, 0.3)', color: '#3D3D3D' }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !answered) {
+                          handleSimilarSubmit();
+                        }
+                      }}
+                    />
+                  </div>
+
+                  {/* Result feedback */}
+                  {answered && (
+                    <div className="rounded-2xl p-4" style={{
+                      background: result ? 'rgba(115, 192, 103, 0.12)' : 'rgba(255, 138, 138, 0.12)',
+                      border: `1.5px solid ${result ? 'rgba(115, 192, 103, 0.4)' : 'rgba(255, 138, 138, 0.4)'}`,
+                    }}>
+                      <p className="text-base font-bold mb-2 flex items-center gap-2" style={{ color: result ? '#2D5A27' : '#D04040' }}>
+                        {result ? <><Check className="w-5 h-5" /> 答对啦！</> : <><X className="w-5 h-5" /> 还差一点</>}
+                      </p>
+                      {!result && (
+                        <p className="text-sm mb-2" style={{ color: '#4A3728' }}>
+                          正确答案：<span className="font-bold px-2 py-0.5 rounded" style={{ background: 'rgba(115, 192, 103, 0.2)', color: '#2D5A27' }}>
+                            {currentQ.answer}
+                          </span>
+                        </p>
+                      )}
+                      {currentQ.hint && (
+                        <p className="text-xs" style={{ color: '#7A756D' }}>
+                          💡 提示：{currentQ.hint}
+                        </p>
+                      )}
+                      {currentQ.explanation && !currentQ.hint && (
+                        <p className="text-xs" style={{ color: '#7A756D' }}>
+                          💡 思路：{currentQ.explanation}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      onClick={handleSimilarClose}
+                      className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium transition-all hover:opacity-80"
+                      style={{ background: 'rgba(0,0,0,0.05)', color: '#5C6170' }}
+                    >
+                      退出练习
+                    </button>
+                    {!answered ? (
+                      <button
+                        onClick={handleSimilarSubmit}
+                        disabled={!similarAnswers[currentQ.index]?.trim()}
+                        className="inline-flex items-center gap-1 px-5 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02] disabled:opacity-50"
+                        style={{ background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)' }}
+                      >
+                        提交答案 <Check className="w-4 h-4" />
+                      </button>
+                    ) : !similarDone ? (
+                      <button
+                        onClick={handleSimilarNext}
+                        className="inline-flex items-center gap-1 px-5 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02]"
+                        style={{ background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)' }}
+                      >
+                        下一题 <ArrowRight className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleSimilarClose}
+                        className="inline-flex items-center gap-1 px-5 py-2 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02]"
+                        style={{ background: 'linear-gradient(135deg, #FFB86C 0%, #FF9A4D 100%)' }}
+                      >
+                        <Trophy className="w-4 h-4" /> 完成
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* ============= 底部提示 ============= */}
       {errors.length > 0 && stats.unresolved > 0 && (
         <div className="text-center pt-2">
           <p className="text-sm italic" style={{ color: '#8B7355' }}>
-            🌟 还有 {stats.unresolved} 只小动物等待救助，点击「开始救助」让 AI 兽医帮忙诊断吧~
+            🌟 还有 {stats.unresolved} 只小动物等待救助，点击「开始救助」让 AI 兽医帮忙诊断，或点「让小聪对话引导」开启多轮对话~
           </p>
         </div>
+      )}
+
+      {/* ============= 小聪智能体对话框（多轮对话引导） ============= */}
+      {xiaocongTarget && (
+        <XiaocongDialog
+          open={xiaocongOpen}
+          errorNoteId={xiaocongTarget.errorNoteId}
+          questionText={xiaocongTarget.questionText}
+          studentAnswer={xiaocongTarget.studentAnswer}
+          correctAnswer={xiaocongTarget.correctAnswer}
+          knowledgePoint={xiaocongTarget.knowledgePoint}
+          onClose={() => setXiaocongOpen(false)}
+        />
       )}
     </div>
   );
