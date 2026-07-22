@@ -2015,31 +2015,37 @@ export async function getMyGameRecords(token: string, gameType?: string, limit =
 
 // ===== AI 智能体「小聪」API =====
 
+// v3 - 苏格拉底式 5 步引导 + 类型 A/B 分流 + 3 道巩固题
 export type XiaocongStage =
-  | 'understand'
-  | 'method_simple'
-  | 'method_apply'
-  | 'method_alt'
-  | 'summary'
-  | 'practice'
-  | 'practice_recover'
-  | 'done';
+  | 'step1_thought'
+  | 'step2_review'
+  | 'step3_formula'
+  | 'step4_calc'
+  | 'step5_reflect'
+  | 'recovery_questions'
+  | 'done'
+  | 'b_quick_check';
 
 export interface XiaocongChatResult {
   error_note_id: number;
   student_id: number;
   stage: XiaocongStage;
+  node: XiaocongStage;
   reply: string;
-  next_question: string | null;
-  next_answer: string | null;
-  next_knowledge_point: string | null;
-  hint_for_student: string | null;
-  summary_text: string | null;
   current_question: string | null;
   current_answer: string | null;
+  current_knowledge_point: string | null;
+  summary_text: string | null;
   current_stage_label: string;
   session_round: number;
   user_mastered: boolean;
+  // v3 新增字段
+  error_type: 'A' | 'B' | null;
+  topic: string;
+  node_stuck_count: number;
+  total_stuck_count: number;
+  recovery_q_index: number;
+  is_node_advance: boolean;
 }
 
 export async function chatWithXiaocong(
