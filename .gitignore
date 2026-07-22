@@ -31,11 +31,26 @@ _frontend_backup/
 
 # Database
 backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/*.bak.*
 backend/data/
+math_tutor.db
+*.db
+*.db-shm
+*.db-wal
+*.bak.*
 
 # Uploads
 backend/uploads/
 backend/static/uploads/
+
+# Outputs
+outputs/
+
+# Temp / generated docs
+generate_docx.py
+*.docx
 
 # Logs
 *.log
