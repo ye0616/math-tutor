@@ -11,7 +11,7 @@ import {
   Search, Filter, ChevronDown, ChevronRight, PlayCircle,
   HelpCircle, AlertTriangle, Bookmark, BookmarkPlus, Trash2,
   ExternalLink, Eye, FileText as FileTextIcon,
-  Undo2, RotateCcw, Wand2, MessagesSquare, ArrowRight, Save,
+  Undo2, RotateCcw, Wand2, ArrowRight, Save,
 } from 'lucide-react';
 import { curriculum, type Unit, type Lesson } from '@/lib/curriculum';
 import {
@@ -23,8 +23,6 @@ import {
   fetchResolveUrl,
   generatePreviewMaterial,
   generateBlackboard, unpublishPreview, republishPreview, deletePreview,
-  generateInquiry, saveInquiry as apiSaveInquiry, loadInquiry as apiLoadInquiry,
-  type InquiryResult,
 } from '@/lib/api';
 
 // ===== 类型定义 =====
@@ -225,11 +223,6 @@ export default function TeacherLesson() {
   const [generatingBoard, setGeneratingBoard] = useState(false);
   // 撤回/重新发布
   const [revokingId, setRevokingId] = useState(0);
-
-  // AI 交互式探索提问
-  const [generatingInquiry, setGeneratingInquiry] = useState(false);
-  const [inquiryData, setInquiryData] = useState<InquiryResult | null>(null);
-  const [loadingInquiry, setLoadingInquiry] = useState(false);
 
   const selectedUnit = curriculum.find(u => u.code === selectedUnitCode) || curriculum[0];
   const selectedLesson = selectedUnit.lessons.find(l => l.code === selectedLessonCode) || selectedUnit.lessons[0];
@@ -828,74 +821,6 @@ export default function TeacherLesson() {
     }
   };
 
-  // ===== AI 交互式探索提问 =====
-  const handleGenerateInquiry = async () => {
-    if (!token) return;
-    setGeneratingInquiry(true);
-    setErrorMsg('');
-    try {
-      const unitInfo = selectedUnit ? `五年级上册 ${selectedUnit.name}` : '';
-      const result = await generateInquiry(token, {
-        lesson_title: selectedLesson.title,
-        unit_info: unitInfo,
-        difficulty: 'mixed',
-      });
-      if (result.success && result.data) {
-        setInquiryData(result.data);
-        setMsg('AI 交互式提问生成成功');
-      } else {
-        setErrorMsg('AI 生成交互式提问失败');
-      }
-    } catch (e: any) {
-      setErrorMsg(e.message || 'AI 生成交互式提问失败，请重试');
-    } finally {
-      setGeneratingInquiry(false);
-    }
-  };
-
-  // 加载已保存的探索提问
-  const handleLoadInquiry = async () => {
-    if (!token || !selectedLesson) return;
-    setLoadingInquiry(true);
-    try {
-      const result = await apiLoadInquiry(token, selectedLesson.code);
-      if (result.success && result.data) {
-        const saved = result.data;
-        if (saved.inquiry_json) {
-          try {
-            const parsed = JSON.parse(saved.inquiry_json);
-            setInquiryData(parsed);
-          } catch {}
-        }
-      }
-    } catch {} finally {
-      setLoadingInquiry(false);
-    }
-  };
-
-  // 保存探索提问
-  const handleSaveInquiry = async () => {
-    if (!token || !inquiryData || !selectedLesson) return;
-    try {
-      await apiSaveInquiry(token, {
-        lesson_code: selectedLesson.code,
-        lesson_title: selectedLesson.title,
-        unit_code: selectedUnit?.code || '',
-        inquiry_json: JSON.stringify(inquiryData),
-      });
-      setMsg('探索提问已保存');
-    } catch (e: any) {
-      setErrorMsg('保存失败');
-    }
-  };
-
-  // 切换课时时自动加载探索提问
-  useEffect(() => {
-    if (token && selectedLesson) {
-      handleLoadInquiry();
-    }
-  }, [selectedLesson?.code]);
-
   // 撤回预习发布
   const handleUnpublish = async (taskId: number) => {
     if (!token) return;
@@ -1333,88 +1258,9 @@ export default function TeacherLesson() {
         </div>
       )}
 
-      {/* ===== AI交互式探索提问 + 原有探究 + 板书设计 ===== */}
+      {/* ===== 原有探究 + 板书设计（依赖 teachData） ===== */}
       {!generating && teachData && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-          {/* AI 交互式探索提问（新） */}
-          <div className="paper-card sketchy p-5" style={{ boxShadow: '2px 2px 0px rgba(60,60,60,0.08)' }}>
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <MessagesSquare className="w-5 h-5" style={{ color: '#8B5CF6' }} />
-                <span className="text-lg font-bold" style={{ color: '#3D3D3D', fontFamily: 'var(--font-caveat), cursive' }}>AI交互提问</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {inquiryData && (
-                  <button onClick={handleSaveInquiry}
-                    className="sketchy-sm px-2 py-1 text-xs font-medium flex items-center gap-1 transition-all hover:opacity-80"
-                    style={{ backgroundColor: '#F3E8F9', color: '#8B5CF6', border: '1.5px solid #8B5CF6' }}>
-                    <Save className="w-3 h-3" /> 保存
-                  </button>
-                )}
-                <button onClick={handleGenerateInquiry} disabled={generatingInquiry}
-                  className="sketchy-sm px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 transition-all hover:opacity-80 disabled:opacity-50"
-                  style={{ backgroundColor: '#F3E8F9', color: '#8B5CF6', border: '1.5px solid #8B5CF6' }}>
-                  {generatingInquiry ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> AI 设计中...</> : <><Wand2 className="w-3.5 h-3.5" /> AI 生成提问</>}
-                </button>
-              </div>
-            </div>
-
-            {inquiryData && inquiryData.stages && inquiryData.stages.length > 0 ? (
-              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
-                {inquiryData.stages.map((stage, i) => {
-                  const stageColors = [
-                    { bg: '#F3E8F9', border: '#8B5CF6', accent: '#8B5CF6' },
-                    { bg: '#FFF7ED', border: '#F97316', accent: '#F97316' },
-                    { bg: '#ECFDF5', border: '#10B981', accent: '#10B981' },
-                  ];
-                  const sc = stageColors[i % 3];
-                  return (
-                    <div key={i} className="rounded-lg p-3" style={{ background: sc.bg, borderLeft: `3px solid ${sc.border}` }}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: `${sc.accent}20`, color: sc.accent }}>
-                          {['WARM-UP', 'CORE', 'CHALLENGE'][i]}
-                        </span>
-                        <span className="text-sm font-bold" style={{ color: '#3D3D3D' }}>{stage.stage}</span>
-                      </div>
-                      <p className="text-xs mb-2" style={{ color: '#6B7280' }}>🎯 {stage.stage_goal}</p>
-                      {stage.questions.map((q, j) => (
-                        <div key={j} className="mb-2 last:mb-0 pb-2 last:pb-0" style={{ borderBottom: j < stage.questions.length - 1 ? '1px dashed rgba(0,0,0,0.1)' : 'none' }}>
-                          <div className="flex items-start gap-1.5 mb-1">
-                            <span className="text-xs font-bold mt-0.5 px-1 rounded" style={{ background: `${sc.accent}20`, color: sc.accent }}>Q{j+1}</span>
-                            <span className="text-sm font-medium" style={{ color: '#1F2937' }}>{q.question}</span>
-                          </div>
-                          <div className="ml-6 space-y-1">
-                            <div className="flex items-start gap-1">
-                              <ArrowRight className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: '#10B981' }} />
-                              <span className="text-xs" style={{ color: '#059669' }}>{q.expected_answer}</span>
-                            </div>
-                            <div className="flex items-start gap-1">
-                              <Lightbulb className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: '#F59E0B' }} />
-                              <span className="text-xs" style={{ color: '#B45309' }}>{q.guide_strategy}</span>
-                            </div>
-                            {q.teaching_tip && (
-                              <div className="text-xs px-1.5 py-0.5 rounded" style={{ background: '#FEF3C7', color: '#92400E' }}>
-                                💡 {q.teaching_tip}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <MessagesSquare className="w-10 h-10 mx-auto mb-3" style={{ color: '#D1D5DB' }} />
-                <p className="text-sm" style={{ color: '#9CA3AF' }}>
-                  {generatingInquiry ? 'AI 正在设计递进式提问...' : '点击「AI 生成提问」为课堂设计交互式探索问题链'}
-                </p>
-                <p className="text-xs mt-2" style={{ color: '#D1D5DB' }}>含热身激活→核心探究→拓展挑战</p>
-              </div>
-            )}
-          </div>
-
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
           {/* 原有探究提问 */}
           {teachData.layer2_inquiry?.stages && (
             <div className="paper-card sketchy p-5" style={{ boxShadow: '2px 2px 0px rgba(60,60,60,0.08)' }}>

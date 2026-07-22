@@ -80,7 +80,51 @@ export default function TeacherAnalytics() {
           {tab==='errors'&&(
             <div className="space-y-5">
               <div className="flex items-center gap-3"><button onClick={runEA} disabled={loading} className="flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium text-white transition-all hover:opacity-90" style={{backgroundColor:'#5C6170'}}><Brain className="w-4 h-4"/>AI深度分析共性错题</button>{loading&&<span className="text-sm" style={{color:'#7A756D'}}>AI正在分析中...</span>}</div>
-              {ea?.weak_points?.length>0&&(<div className="paper-card sketchy p-5 space-y-4" style={{boxShadow:'var(--shadow-teacher-card)'}}><h2 className="text-lg font-bold" style={{color:'#5C6170',fontFamily:'var(--font-hand), cursive'}}>{ea.summary||'班级共性错题分析'}</h2>{ea.weak_points?.map((wp:any,i:number)=>(<div key={i} className="p-4 rounded-md" style={{backgroundColor:'#FDFBF7',borderLeft:'3px solid #C0785C'}}><div className="font-bold text-sm" style={{color:'#3D3D3D'}}>{wp.knowledge_point||wp.name||`薄弱点${i+1}`}</div>{wp.error_count!==undefined&&<div className="text-xs mt-1" style={{color:'#7A756D'}}>错误次数:{wp.error_count}|错误率:{wp.error_rate}%</div>}{wp.root_cause&&<div className="text-xs mt-1" style={{color:'#5C6170'}}>根因:{wp.root_cause}</div>}{wp.teaching_suggestion&&<div className="text-xs mt-1" style={{color:'#6B8F71'}}>建议:{wp.teaching_suggestion}</div>}</div>))}{ea.suggestions?.length>0&&(<div className="p-3 rounded-md" style={{backgroundColor:'rgba(107,143,113,0.08)'}}><div className="font-bold text-sm mb-1" style={{color:'#6B8F71'}}>教学建议</div><ul className="text-xs space-y-0.5" style={{color:'#5C6170'}}>{ea.suggestions.map((s:string,i:number)=><li key={i}>• {s}</li>)}</ul></div>)}{ea.urgent_actions?.length>0&&(<div className="p-3 rounded-md" style={{backgroundColor:'rgba(192,120,92,0.08)'}}><div className="font-bold text-sm mb-1" style={{color:'#C0785C'}}>紧急行动</div><ul className="text-xs space-y-0.5" style={{color:'#5C6170'}}>{ea.urgent_actions.map((a:string,i:number)=><li key={i}>• {a}</li>)}</ul></div>)}</div>)}
+              {(()=>{
+                const weakPoints = ea?.weak_points || ea?.common_weak_points || [];
+                const suggestions = ea?.suggestions || ea?.recommended_exercises || [];
+                const urgentActions = ea?.urgent_actions || [];
+                const summary = ea?.summary || ea?.overall_analysis || '班级共性错题分析';
+                if (weakPoints.length > 0) {
+                  return (
+                    <div className="paper-card sketchy p-5 space-y-4" style={{boxShadow:'var(--shadow-teacher-card)'}}>
+                      <h2 className="text-lg font-bold" style={{color:'#5C6170',fontFamily:'var(--font-hand), cursive'}}>{summary}</h2>
+                      {weakPoints.map((wp:any,i:number)=>(
+                        <div key={i} className="p-4 rounded-md" style={{backgroundColor:'#FDFBF7',borderLeft:'3px solid #C0785C'}}>
+                          <div className="font-bold text-sm" style={{color:'#3D3D3D'}}>{wp.knowledge_point||wp.name||`薄弱点${i+1}`}</div>
+                          {wp.error_count!==undefined && <div className="text-xs mt-1" style={{color:'#7A756D'}}>错误次数:{wp.error_count}|错误率:{wp.error_rate!==undefined?`${Math.round(wp.error_rate*100)}%`:'-'}</div>}
+                          {wp.root_cause && <div className="text-xs mt-1" style={{color:'#5C6170'}}>根因:{wp.root_cause}</div>}
+                          {wp.teaching_suggestion && <div className="text-xs mt-1" style={{color:'#6B8F71'}}>建议:{wp.teaching_suggestion}</div>}
+                        </div>
+                      ))}
+                      {suggestions.length > 0 && (
+                        <div className="p-3 rounded-md" style={{backgroundColor:'rgba(107,143,113,0.08)'}}>
+                          <div className="font-bold text-sm mb-1" style={{color:'#6B8F71'}}>教学建议</div>
+                          <ul className="text-xs space-y-0.5" style={{color:'#5C6170'}}>
+                            {suggestions.map((s:string,i:number)=><li key={i}>• {s}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                      {urgentActions.length > 0 && (
+                        <div className="p-3 rounded-md" style={{backgroundColor:'rgba(192,120,92,0.08)'}}>
+                          <div className="font-bold text-sm mb-1" style={{color:'#C0785C'}}>紧急行动</div>
+                          <ul className="text-xs space-y-0.5" style={{color:'#5C6170'}}>
+                            {urgentActions.map((a:string,i:number)=><li key={i}>• {a}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                if (ea) {
+                  return (
+                    <div className="paper-card sketchy p-5" style={{boxShadow:'var(--shadow-teacher-card)'}}>
+                      <div className="text-sm" style={{color:'#7A756D'}}>{summary || '班级暂无共性错题'}</div>
+                    </div>
+                  );
+                }
+                return <div className="text-center py-16 text-gray-400">点击上方按钮，让AI深度分析班级共性薄弱知识点</div>;
+              })()}
               {!ea&&!loading&&<div className="text-center py-16 text-gray-400">点击上方按钮，让AI深度分析班级共性薄弱知识点</div>}
             </div>
           )}

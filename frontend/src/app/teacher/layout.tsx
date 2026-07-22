@@ -20,9 +20,8 @@ import ProfileModal from '@/components/ProfileModal';
 const navItems = [
   { href: '/teacher/dashboard', label: '工作台', icon: LayoutDashboard },
   { href: '/teacher/lesson', label: '课堂教学', icon: BookOpen },
-  { href: '/teacher/grading', label: '拍照批改', icon: Camera },
+  { href: '/teacher/grading', label: '作业练习', icon: Camera },
   { href: '/teacher/analytics', label: '学情分析', icon: BarChart3 },
-  { href: '/teacher/class-errors', label: '错题&出题', icon: AlertCircle },
   { href: '/teacher/management', label: '班级管理', icon: Users },
   { href: '/teacher/store', label: '积分商城', icon: Gift },
   { href: '/teacher/resource-library', label: '资源库', icon: Archive },
@@ -34,14 +33,22 @@ export default function TeacherLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const [profileOpen, setProfileOpen] = useState(false);
+  // 避免 SSR/CSR hydration mismatch：先以服务端一致的占位渲染，mounted 后再读 localStorage 替换
+  const [mounted, setMounted] = useState(false);
   const [userInfo, setUserInfo] = useState<any>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => {
-    setUserInfo(getStoredUser());
+    try { setUserInfo(getStoredUser()); } catch { /* noop */ }
+    setMounted(true);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'math-tutor-user') setUserInfo(getStoredUser());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const userName = userInfo?.name || '老师';
+  const userName = mounted && userInfo?.name ? userInfo.name : '老师';
   const avatarText = (userName || '?')[0];
   const hour = new Date().getHours();
   const greeting = hour < 6 ? '凌晨好' : hour < 12 ? '上午好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好';
@@ -106,7 +113,14 @@ export default function TeacherLayout({
             </div>
             <div className="flex items-center gap-4">
               <button
-                onClick={() => setProfileOpen(true)}
+                onClick={() => {
+                  if (!userInfo) {
+                    const u = getStoredUser();
+                    if (u) setUserInfo(u);
+                    else { window.location.href = '/'; return; }
+                  }
+                  setProfileOpen(true);
+                }}
                 className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition-all hover:scale-110 cursor-pointer"
                 style={{ backgroundColor: '#EDEBE6', color: '#5C6170', border: '2px solid transparent' }}
                 title="个人中心"

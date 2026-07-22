@@ -95,28 +95,6 @@ export default function HomePage() {
     }
   };
 
-  const handleGuest = () => {
-    if (!selectedRole) return;
-    if (selectedRole === 'student') {
-      // 学生无测试账号，提示向老师获取
-      setError('学生账号由老师统一创建，请向老师询问你的姓名和学号');
-      return;
-    }
-    // 教师/管理员：用预置账号登录
-    const guestAccounts: Record<string, { phone: string; password: string }> = {
-      teacher: { phone: '13800000002', password: '123456' },
-      admin: { phone: '13800000001', password: 'admin123' },
-    };
-    const acc = guestAccounts[selectedRole];
-    if (!acc) return;
-    setPhone(acc.phone);
-    setPassword(acc.password);
-    setTimeout(() => {
-      const form = document.getElementById('auth-form') as HTMLFormElement;
-      form?.requestSubmit();
-    }, 100);
-  };
-
   const closeModal = () => {
     setSelectedRole(null);
     setName('');
@@ -582,16 +560,17 @@ export default function HomePage() {
                 {loading ? '处理中...' : (isLogin ? '登录' : isStudentModal ? '暂不支持' : '注册')}
               </button>
 
-              {/* Guest login */}
+              {/* Guest login removed — all roles must enter credentials manually */}
               <div className="text-center">
-                <button
-                  type="button"
-                  onClick={handleGuest}
-                  className="text-sm transition-colors hover:opacity-70"
-                  style={{ color: subTextColor }}
-                >
-                  {isAdminModal ? '使用默认管理员账号 →' : isTeacherModal ? '以游客身份体验 →' : '如何获取账号？ →'}
-                </button>
+                {isTeacherModal ? (
+                  <span className="text-xs opacity-60" style={{ color: subTextColor }}>
+                    联系管理员获取账号
+                  </span>
+                ) : isStudentModal ? (
+                  <span className="text-xs opacity-60" style={{ color: subTextColor }}>
+                    学生账号由老师创建
+                  </span>
+                ) : null}
               </div>
 
               {/* Toggle login/register (teacher only, not student/admin) */}
@@ -609,17 +588,7 @@ export default function HomePage() {
                 </div>
               )}
 
-              {/* Test account hint */}
-              {isLogin && !isAdminModal && (
-                <div className="text-center text-xs opacity-60" style={{ color: subTextColor }}>
-                  {isTeacherModal ? '测试账号：13800000002 / 123456' : '账号由老师创建，请向老师获取'}
-                </div>
-              )}
-              {isLogin && isAdminModal && (
-                <div className="text-center text-xs opacity-60" style={{ color: subTextColor }}>
-                  默认账号：13800000001 / admin123
-                </div>
-              )}
+              {/* Test account hint — 已全部移除，要求手动输入凭据 */}
             </form>
           </div>
         </div>
