@@ -21,6 +21,9 @@ backend/**/*.pyc
 .DS_Store
 Thumbs.db
 
+# Next.js auto-generated
+frontend/next-env.d.ts
+
 # Build
 frontend/out/
 dist/
