@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { X, Send, Sparkles, CheckCircle2, Loader2 } from 'lucide-react';
+import { X, Send, Sparkles, CheckCircle2, Loader2, Eye, EyeOff, RefreshCw, Trophy, MessageSquareQuote } from 'lucide-react';
 import {
   chatWithXiaocong,
   resetXiaocongSession,
   getXiaocongStatus,
-  XiaocongStage,
+  type XiaocongStage,
 } from '@/lib/api';
 import { getToken } from '@/lib/api';
 
@@ -24,15 +24,27 @@ interface ChatMsg {
   id: number;
   role: 'xiaocong' | 'user' | 'system';
   content: string;
-  // 当 message 是巩固题时附带
-  next_question?: string | null;
+  // 当是巩固题（或顶部展示）时附带
+  question_text?: string;
   next_answer?: string | null;
   next_knowledge_point?: string | null;
   stage?: XiaocongStage;
+  is_question_card?: boolean;
 }
 
 let _msgId = 0;
 const nextId = () => ++_msgId;
+
+const STAGE_LABELS: Record<XiaocongStage, { label: string; color: string; emoji: string }> = {
+  understand:        { label: '理解题意',     color: 'bg-blue-500',   emoji: '🤔' },
+  method_simple:     { label: '找最简方法',   color: 'bg-orange-500', emoji: '💡' },
+  method_apply:      { label: '用方法做下去', color: 'bg-orange-500', emoji: '🛠️' },
+  method_alt:        { label: '换一种方法',   color: 'bg-pink-500',   emoji: '🔄' },
+  summary:           { label: '总结思路',     color: 'bg-purple-500', emoji: '📝' },
+  practice:          { label: '做巩固题',     color: 'bg-green-500',  emoji: '🎯' },
+  practice_recover:  { label: '再来一次',     color: 'bg-red-500',    emoji: '💪' },
+  done:              { label: '完成啦',       color: 'bg-emerald-500',emoji: '🏆' },
+};
 
 export default function XiaocongDialog({
   open,
@@ -46,20 +58,32 @@ export default function XiaocongDialog({
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [stage, setStage] = useState<XiaocongStage>('guide');
-  const [finished, setFinished] = useState(false);
+  const [stage, setStage] = useState<XiaocongStage>('understand');
+  const [stageLabel, setStageLabel] = useState<string>(STAGE_LABELS.understand.label);
+  const [currentQuestion, setCurrentQuestion] = useState<string | null>(null);
+  const [currentAnswer, setCurrentAnswer] = useState<string | null>(null);
+  const [userMastered, setUserMastered] = useState(false);
+  const [summaryText, setSummaryText] = useState<string | null>(null);
+  const [showAnswer, setShowAnswer] = useState(false);
+  const [round, setRound] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [initStarted, setInitStarted] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 每次 open 时重置并开场
+  // 每次 open 时重置
   useEffect(() => {
     if (!open) return;
     setMessages([]);
     setInput('');
-    setStage('guide');
-    setFinished(false);
+    setStage('understand');
+    setStageLabel(STAGE_LABELS.understand.label);
+    setCurrentQuestion(null);
+    setCurrentAnswer(null);
+    setUserMastered(false);
+    setSummaryText(null);
+    setShowAnswer(false);
+    setRound(0);
     setError(null);
     setInitStarted(false);
   }, [open, errorNoteId]);
@@ -75,6 +99,18 @@ export default function XiaocongDialog({
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages.length]);
 
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [stage]);
+
+  // 「卡住了，给我个提示」按钮：把 hint_for_student 作为学生的发言回传
+  async function askForHint() {
+    if (loading) return;
+    const hintMsg = '（我卡住了，能给我一个小提示吗？）';
+    // 把这个作为学生消息追加，然后调一次 chat
+    await sendMessageInternal(hintMsg, false, /*isHint*/ true);
+  }
+
   async function startConversation() {
     const token = getToken();
     if (!token) {
@@ -82,16 +118,14 @@ export default function XiaocongDialog({
       return;
     }
 
-    // 先查会话状态，如果已经有对话则恢复历史
     try {
       const status: any = await getXiaocongStatus(token, errorNoteId);
       if (status?.session_round && status.session_round > 0) {
-        // 有历史：让用户主动点击继续
         setMessages([
           {
             id: nextId(),
             role: 'system',
-            content: `（欢迎回来～你之前和我想过 ${status.session_round} 轮了，要不要继续？）`,
+            content: `（欢迎回来～上次我们聊了 ${status.session_round} 轮，要不要继续？）`,
           },
         ]);
         return;
@@ -100,11 +134,10 @@ export default function XiaocongDialog({
       // ignore
     }
 
-    // 首轮：发空消息触发小聪开场
     await sendMessageInternal('', true);
   }
 
-  async function sendMessageInternal(text: string, isInit = false) {
+  async function sendMessageInternal(text: string, isInit = false, isHint = false) {
     const token = getToken();
     if (!token) return;
     setLoading(true);
@@ -116,41 +149,58 @@ export default function XiaocongDialog({
         knowledge_point: knowledgePoint,
       });
 
-      // 如果不是 init，把学生消息也显示出来
+      // 把学生消息（含 hint 标记）显示
+      const newMsgs: ChatMsg[] = [];
       if (!isInit && text) {
-        setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: text }]);
+        newMsgs.push({
+          id: nextId(),
+          role: 'user',
+          content: text,
+        });
       }
 
-      setStage(resp.stage);
-
-      // 显示小聪的回复
       const xiaocongMsg: ChatMsg = {
         id: nextId(),
         role: 'xiaocong',
         content: resp.reply,
         stage: resp.stage,
       };
+      newMsgs.push(xiaocongMsg);
 
-      // 如果进入 practice 且有 next_question，把巩固题作为单独一条消息追加
-      const newMsgs: ChatMsg[] = [xiaocongMsg];
+      // 进入 practice → 把巩固题作为单独卡片置顶
       if (resp.stage === 'practice' && resp.next_question) {
         newMsgs.push({
           id: nextId(),
           role: 'xiaocong',
-          content: `🆕 **巩固题**：${resp.next_question}`,
-          next_question: resp.next_question,
+          content: '🎯 这是给你的巩固题，做完后回复答案给我看～',
+          question_text: resp.next_question,
           next_answer: resp.next_answer,
           next_knowledge_point: resp.next_knowledge_point,
           stage: 'practice',
+          is_question_card: true,
+        });
+      }
+
+      // 进入 done → 显示总结
+      if (resp.stage === 'done' && resp.summary_text) {
+        newMsgs.push({
+          id: nextId(),
+          role: 'xiaocong',
+          content: '📌 **今天的方法总结**\n\n' + resp.summary_text,
+          stage: 'done',
         });
       }
 
       setMessages((prev) => [...prev, ...newMsgs]);
 
-      // 进入 done 阶段，标记完成
-      if (resp.stage === 'done') {
-        setFinished(true);
-      }
+      // 更新 stage 与上下文
+      setStage(resp.stage);
+      setStageLabel(resp.current_stage_label || STAGE_LABELS[resp.stage]?.label || '思考中');
+      setCurrentQuestion(resp.current_question);
+      setCurrentAnswer(resp.current_answer);
+      setUserMastered(resp.user_mastered);
+      setSummaryText(resp.summary_text);
+      setRound(resp.session_round);
     } catch (e: any) {
       setError(e?.message || '小聪正在休息中…请稍后再试');
       setMessages((prev) => [
@@ -182,44 +232,116 @@ export default function XiaocongDialog({
     onClose();
   }
 
+  // 主动「再来一次」：发一个"我想再试试"消息推动 practice_recover / practice
+  async function handleRetryPractice() {
+    if (loading) return;
+    await sendMessageInternal('我想再试一次', false);
+  }
+
   if (!open) return null;
+
+  const stageInfo = STAGE_LABELS[stage] ?? STAGE_LABELS.understand;
+  const showQuestionCard = !!currentQuestion && (stage === 'practice' || stage === 'practice_recover');
+  // 输入框允许：除了 done 外都能输入；stage=practice_recover 时引导也允许
+  const inputDisabled = stage === 'done' || loading;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex justify-end" onClick={handleFinish}>
-      {/* 右侧抽屉 */}
       <div
         className="w-full max-w-md h-full bg-gradient-to-b from-orange-50 to-amber-50 shadow-2xl flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 顶部 */}
-        <div className="bg-gradient-to-r from-orange-400 to-amber-400 text-white px-5 py-4 flex items-center justify-between shadow-md">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center text-2xl">
-              🦊
-            </div>
-            <div>
-              <div className="font-bold text-lg flex items-center gap-1">
-                小聪 <Sparkles className="w-4 h-4" />
+        <div className="bg-gradient-to-r from-orange-400 to-amber-400 text-white px-5 py-4 shadow-md">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center text-2xl">
+                🦊
               </div>
-              <div className="text-xs opacity-90">你的数学小伙伴</div>
+              <div>
+                <div className="font-bold text-lg flex items-center gap-1">
+                  小聪 <Sparkles className="w-4 h-4" />
+                </div>
+                <div className="text-xs opacity-90">你的数学小伙伴</div>
+              </div>
             </div>
+            <button
+              onClick={handleFinish}
+              className="text-white/80 hover:text-white hover:bg-white/10 rounded-lg p-1.5"
+              aria-label="关闭"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
-          <button
-            onClick={handleFinish}
-            className="text-white/80 hover:text-white hover:bg-white/10 rounded-lg p-1.5"
-            aria-label="关闭"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          {/* 阶段进度条 */}
+          <div className="mt-3 flex items-center justify-between text-xs">
+            <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-white ${stageInfo.color}`}>
+              <span>{stageInfo.emoji}</span>
+              <span>{stageLabel}</span>
+            </div>
+            <div className="text-white/80">第 {round} 轮</div>
+          </div>
+          {/* 阶段步骤指示 */}
+          <div className="mt-2 flex gap-1">
+            {(['understand', 'method_simple', 'method_apply', 'summary', 'practice'] as XiaocongStage[]).map((s, i) => {
+              const order = ['understand', 'method_simple', 'method_apply', 'summary', 'practice'];
+              const cur = order.indexOf(stage as any);
+              const idx = order.indexOf(s);
+              const reached = cur >= idx && stage !== 'method_alt' && stage !== 'practice_recover';
+              return (
+                <div
+                  key={s}
+                  className={`flex-1 h-1 rounded-full ${reached ? 'bg-white' : 'bg-white/30'}`}
+                  title={STAGE_LABELS[s].label}
+                />
+              );
+            })}
+          </div>
         </div>
 
-        {/* 错题上下文（如果有） */}
+        {/* 错题上下文（顶部固定卡片） */}
         {questionText && (
-          <div className="bg-white/70 border-b border-orange-200 px-5 py-3 text-sm">
-            <div className="text-orange-700 font-semibold mb-1">📝 当前错题</div>
-            <div className="text-gray-800">{questionText}</div>
+          <div className="bg-white/80 border-b border-orange-200 px-5 py-3 text-sm">
+            <div className="text-orange-700 font-semibold mb-1 flex items-center gap-1">
+              📝 当前错题
+              {userMastered && (
+                <span className="text-green-600 text-xs flex items-center gap-1 ml-auto">
+                  <CheckCircle2 className="w-3 h-3" /> 已掌握
+                </span>
+              )}
+            </div>
+            <div className="text-gray-800 whitespace-pre-wrap">{questionText}</div>
             {studentAnswer && (
               <div className="mt-1 text-xs text-gray-500">你之前答：{studentAnswer}</div>
+            )}
+          </div>
+        )}
+
+        {/* 巩固题卡片（如果当前在 practice / practice_recover） */}
+        {showQuestionCard && currentQuestion && (
+          <div className="bg-gradient-to-br from-green-50 to-emerald-50 border-b-2 border-green-300 px-5 py-3 text-sm shadow-inner">
+            <div className="text-green-700 font-semibold mb-1.5 flex items-center gap-1.5">
+              <Trophy className="w-4 h-4" />
+              巩固题
+              {stage === 'practice_recover' && (
+                <span className="text-xs text-red-500 ml-2">（再来一次，加油！）</span>
+              )}
+            </div>
+            <div className="text-gray-800 font-medium whitespace-pre-wrap">{currentQuestion}</div>
+            {currentAnswer && (
+              <button
+                onClick={() => setShowAnswer((v) => !v)}
+                className="mt-2 flex items-center gap-1 text-xs text-orange-600 hover:text-orange-800"
+              >
+                {showAnswer ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                {showAnswer ? '收起答案' : '看看答案'}
+              </button>
+            )}
+            {showAnswer && currentAnswer && (
+              <div className="mt-1 text-xs text-gray-700 bg-white border border-green-200 rounded px-2 py-1.5">
+                <span className="text-green-700 font-semibold">正确答案：</span>{currentAnswer}
+              </div>
             )}
           </div>
         )}
@@ -239,12 +361,26 @@ export default function XiaocongDialog({
               );
             }
             if (m.role === 'xiaocong') {
+              // 巩固题卡片（在对话流中）
+              if (m.is_question_card && m.question_text) {
+                return (
+                  <div key={m.id} className="flex items-start gap-2">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-amber-400 flex items-center justify-center text-white text-sm flex-shrink-0">
+                      🦊
+                    </div>
+                    <div className="bg-green-50 border border-green-300 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] shadow-sm text-gray-800 text-sm">
+                      <div className="whitespace-pre-wrap text-green-700 font-semibold mb-1">{m.content}</div>
+                      <div className="text-gray-800 mt-1 whitespace-pre-wrap">{m.question_text}</div>
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div key={m.id} className="flex items-start gap-2">
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-amber-400 flex items-center justify-center text-white text-sm flex-shrink-0">
                     🦊
                   </div>
-                  <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[80%] shadow-sm text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">
+                  <div className="bg-white rounded-2xl rounded-tl-sm px-4 py-2.5 max-w-[85%] shadow-sm text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">
                     {m.content}
                   </div>
                 </div>
@@ -253,7 +389,7 @@ export default function XiaocongDialog({
             // user
             return (
               <div key={m.id} className="flex items-start gap-2 justify-end">
-                <div className="bg-orange-500 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-[80%] shadow-sm text-sm leading-relaxed whitespace-pre-wrap">
+                <div className="bg-orange-500 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-[85%] shadow-sm text-sm leading-relaxed whitespace-pre-wrap">
                   {m.content}
                 </div>
                 <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center text-gray-600 text-xs flex-shrink-0">
@@ -275,24 +411,33 @@ export default function XiaocongDialog({
             </div>
           )}
 
-          {finished && (
-            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-center text-sm">
-              <CheckCircle2 className="inline w-4 h-4 text-green-500 mr-1" />
-              太棒啦！这道错题已经搞定～
-              <div className="mt-2">
-                <button
-                  onClick={handleFinish}
-                  className="bg-green-500 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-green-600"
-                >
-                  完成，关闭
-                </button>
+          {/* 完成时显示总结卡 + 关闭按钮 */}
+          {stage === 'done' && (
+            <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-300 rounded-xl px-4 py-4 text-center text-sm shadow-sm">
+              <div className="text-3xl mb-2">🎉</div>
+              <div className="text-emerald-700 font-semibold mb-2">
+                太棒啦！这一道你已经学会了～
               </div>
+              {summaryText && (
+                <div className="bg-white rounded-lg p-3 text-left text-xs text-gray-700 leading-relaxed mb-3 whitespace-pre-wrap">
+                  <div className="font-semibold text-emerald-700 mb-1 flex items-center gap-1">
+                    <MessageSquareQuote className="w-3 h-3" />方法总结
+                  </div>
+                  {summaryText}
+                </div>
+              )}
+              <button
+                onClick={handleFinish}
+                className="bg-emerald-500 text-white px-5 py-2 rounded-lg text-sm hover:bg-emerald-600 flex items-center gap-1.5 mx-auto"
+              >
+                <CheckCircle2 className="w-4 h-4" /> 学到啦，关闭
+              </button>
             </div>
           )}
         </div>
 
         {/* 输入区 */}
-        {!finished && (
+        {!inputDisabled && (
           <div className="border-t border-orange-200 bg-white px-4 py-3">
             {error && (
               <div className="text-xs text-red-500 mb-2">{error}</div>
@@ -309,11 +454,13 @@ export default function XiaocongDialog({
                   }
                 }}
                 placeholder={
-                  stage === 'guide'
-                    ? '把你的想法告诉小聪…'
-                    : stage === 'practice'
-                    ? '回答巩固题…'
-                    : '继续和小聪聊聊'
+                  stage === 'practice'
+                    ? '把巩固题的答案告诉小聪…'
+                    : stage === 'practice_recover'
+                    ? '再试一次，把答案告诉小聪～'
+                    : stage === 'summary'
+                    ? '用 1 句话总结：这道题先做什么、再做什么…'
+                    : '把你的想法告诉小聪…'
                 }
                 className="flex-1 border border-orange-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
                 disabled={loading}
@@ -327,6 +474,29 @@ export default function XiaocongDialog({
                 发送
               </button>
             </div>
+
+            {/* 卡住了按钮 */}
+            {(stage === 'method_simple' || stage === 'method_apply' || stage === 'method_alt' || stage === 'understand') && (
+              <button
+                onClick={askForHint}
+                disabled={loading}
+                className="mt-2 text-xs text-orange-600 hover:text-orange-800 flex items-center gap-1 disabled:text-gray-400"
+              >
+                💡 我卡住了，给我个小提示
+              </button>
+            )}
+
+            {/* 巩固题卡住了重来按钮 */}
+            {stage === 'practice_recover' && (
+              <button
+                onClick={handleRetryPractice}
+                disabled={loading}
+                className="mt-2 w-full bg-red-50 text-red-600 hover:bg-red-100 rounded-lg py-1.5 text-xs flex items-center justify-center gap-1"
+              >
+                <RefreshCw className="w-3 h-3" /> 让小聪再用最简单的方法讲一遍
+              </button>
+            )}
+
             <div className="mt-2 text-[10px] text-gray-400 text-center">
               小提示：把你的思路说出来，小聪会一步步引导你～
             </div>

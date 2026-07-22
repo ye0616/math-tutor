@@ -2015,7 +2015,15 @@ export async function getMyGameRecords(token: string, gameType?: string, limit =
 
 // ===== AI 智能体「小聪」API =====
 
-export type XiaocongStage = 'guide' | 'practice' | 'done';
+export type XiaocongStage =
+  | 'understand'
+  | 'method_simple'
+  | 'method_apply'
+  | 'method_alt'
+  | 'summary'
+  | 'practice'
+  | 'practice_recover'
+  | 'done';
 
 export interface XiaocongChatResult {
   error_note_id: number;
@@ -2025,7 +2033,13 @@ export interface XiaocongChatResult {
   next_question: string | null;
   next_answer: string | null;
   next_knowledge_point: string | null;
+  hint_for_student: string | null;
+  summary_text: string | null;
+  current_question: string | null;
+  current_answer: string | null;
+  current_stage_label: string;
   session_round: number;
+  user_mastered: boolean;
 }
 
 export async function chatWithXiaocong(
