@@ -402,10 +402,9 @@ function GradingResult({ result, token, userId, onReset, lessonCode }: { result:
   const isAllCorrect = total > 0 && correct === total;
   const lessonTitle = submission?.lesson_title || '';
 
-  // 把每题的 error_note_id 与 question 一一对应（按 question_index 顺序对齐）
-  const errorNoteIds: (number | null)[] = questions.map((q) => {
+  // 把每题的 error_note_id 与 question 一一对应（按 questions 数组索引顺序对齐）
+  const errorNoteIds: (number | null)[] = questions.map((q, idx) => {
     if (q.is_correct === 1) return null;
-    const idx = (q.question_index ?? 0);
     return result.error_note_ids?.[idx] ?? null;
   });
 
@@ -433,7 +432,9 @@ function GradingResult({ result, token, userId, onReset, lessonCode }: { result:
   }, [result]);
 
   const openXiaocongFor = (question: HomeworkQuestion) => {
-    const idx = question.question_index ?? 0;
+    // 在 questions 数组里找该题的索引（不要用 question_index，它可能是 1-based）
+    const idx = questions.findIndex((q) => q.id === question.id);
+    if (idx < 0) return;
     const errorNoteId = errorNoteIds[idx];
     if (!errorNoteId) return;
     setXiaocongTarget({ errorNoteId, question });

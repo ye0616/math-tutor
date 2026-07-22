@@ -184,7 +184,8 @@ def upload_homework(
 
             # 逐题保存到 homework_questions 表 + 错题自动入错题本 + 完成加积分
             # 全部放在同一个 db 会话里，确保 commit 后再关闭
-            error_note_ids: list[int] = []
+            # error_note_ids 按 question 列表的循环顺序对齐：每个位置要么是错题 ID 要么是 None
+            error_note_ids: list[int | None] = [None] * len(questions)
             with get_db() as db:
                 db.execute(
                     "UPDATE homework_submissions SET status='completed', grading_json=?, summary=?, "
@@ -193,7 +194,7 @@ def upload_homework(
                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), submission_id),
                 )
 
-                for q in questions:
+                for qi, q in enumerate(questions):
                     cursor = db.execute(
                         "INSERT INTO homework_questions "
                         "(submission_id, student_id, question_index, question_text, student_answer, "
@@ -225,12 +226,13 @@ def upload_homework(
                              question_id,
                              "unresolved"),
                         )
-                        error_note_ids.append(en_cursor.lastrowid)
+                        # 用循环索引 qi 而非 q.get('index')，确保与前端 questions 数组索引一致
+                        error_note_ids[qi] = en_cursor.lastrowid
 
                 # 完成当天复习任务 +0.5分
                 add_points(db, student_id, 0.5, "完成学习作业")
 
-            # 把 error_note_ids 回传给前端（按 question_index 顺序）
+            # 把 error_note_ids 回传给前端（按 questions 数组索引顺序）
             _grading_tasks[task_id]["error_note_ids"] = error_note_ids
 
             _grading_tasks[task_id]["status"] = "completed"
