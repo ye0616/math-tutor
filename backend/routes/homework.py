@@ -182,6 +182,9 @@ def upload_homework(
 
             grading_json = json.dumps({"questions": questions, "summary": summary, "success": True}, ensure_ascii=False)
 
+            # 逐题保存到 homework_questions 表 + 错题自动入错题本 + 完成加积分
+            # 全部放在同一个 db 会话里，确保 commit 后再关闭
+            error_note_ids: list[int] = []
             with get_db() as db:
                 db.execute(
                     "UPDATE homework_submissions SET status='completed', grading_json=?, summary=?, "
@@ -190,45 +193,42 @@ def upload_homework(
                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), submission_id),
                 )
 
-            # 逐题保存到 homework_questions 表 + 错题自动入错题本
-            error_note_ids: list[int] = []
-            for q in questions:
-                cursor = db.execute(
-                    "INSERT INTO homework_questions "
-                    "(submission_id, student_id, question_index, question_text, student_answer, "
-                    "correct_answer, is_correct, analysis, error_type, correction_hint, knowledge_point) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (submission_id, student_id, q.get("index", 0),
-                     q.get("question_text", ""), q.get("student_answer", ""),
-                     q.get("correct_answer", ""), int(q.get("is_correct", False)),
-                     q.get("analysis", ""), q.get("error_type", ""),
-                     q.get("correction_hint", ""), q.get("knowledge_point", "")),
-                )
-                question_id = cursor.lastrowid
-
-                # 错题自动加入错题本（记录 error_note_id 用于弹小聪）
-                if not q.get("is_correct"):
-                    en_cursor = db.execute(
-                        "INSERT INTO error_notes "
-                        "(student_id, question_id, question_text, student_answer, correct_answer, "
-                        "analysis, knowledge_point, error_type, source, homework_question_id, status) "
+                for q in questions:
+                    cursor = db.execute(
+                        "INSERT INTO homework_questions "
+                        "(submission_id, student_id, question_index, question_text, student_answer, "
+                        "correct_answer, is_correct, analysis, error_type, correction_hint, knowledge_point) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (student_id, None,  # question_id=NULL 因为不来自 questions 表
-                         q.get("question_text", ""),
-                         q.get("student_answer", ""),
-                         q.get("correct_answer", ""),
-                         q.get("analysis", ""),
-                         q.get("knowledge_point", ""),
-                         q.get("error_type", ""),
-                         "homework",  # source 标记为作业来源
-                         question_id,
-                         "unresolved"),
+                        (submission_id, student_id, q.get("index", 0),
+                         q.get("question_text", ""), q.get("student_answer", ""),
+                         q.get("correct_answer", ""), int(q.get("is_correct", False)),
+                         q.get("analysis", ""), q.get("error_type", ""),
+                         q.get("correction_hint", ""), q.get("knowledge_point", "")),
                     )
-                    error_note_ids.append(en_cursor.lastrowid)
-                    # 做错题自动录入错题本（不加积分，积分统一在下面加）
+                    question_id = cursor.lastrowid
 
-            # 完成当天复习任务 +0.5分
-            add_points(db, student_id, 0.5, "完成学习作业")
+                    # 错题自动加入错题本（记录 error_note_id 用于弹小聪）
+                    if not q.get("is_correct"):
+                        en_cursor = db.execute(
+                            "INSERT INTO error_notes "
+                            "(student_id, question_id, question_text, student_answer, correct_answer, "
+                            "analysis, knowledge_point, error_type, source, homework_question_id, status) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (student_id, None,  # question_id=NULL 因为不来自 questions 表
+                             q.get("question_text", ""),
+                             q.get("student_answer", ""),
+                             q.get("correct_answer", ""),
+                             q.get("analysis", ""),
+                             q.get("knowledge_point", ""),
+                             q.get("error_type", ""),
+                             "homework",  # source 标记为作业来源
+                             question_id,
+                             "unresolved"),
+                        )
+                        error_note_ids.append(en_cursor.lastrowid)
+
+                # 完成当天复习任务 +0.5分
+                add_points(db, student_id, 0.5, "完成学习作业")
 
             # 把 error_note_ids 回传给前端（按 question_index 顺序）
             _grading_tasks[task_id]["error_note_ids"] = error_note_ids
