@@ -6,13 +6,13 @@ import {
   Stethoscope, AlertCircle, Heart, ChevronDown, ChevronUp, Sparkles,
   Activity, HeartPulse, Filter, Loader2, RefreshCw, Lightbulb,
   Zap, Target, Check, X, Trophy, Camera, Upload, Flame, Award, BookOpen,
-  Brain, ArrowRight, ArrowLeft,
+  Brain, ArrowRight, ArrowLeft, Pencil,
 } from 'lucide-react';
 import {
   getStoredUser, getToken, fetchErrors, diagnoseError, fetchStudentDashboard,
   mistakeBreakthrough, submitBreakthroughAnswer, resolveErrorNote,
   uploadErrorPhoto, fetchReheatList, generateExpansion, getExpansionTask, submitExpansionAnswer,
-  guidedCorrection, similarQuestions,
+  guidedCorrection, similarQuestions, startRehab, completeRehab,
 } from '@/lib/api';
 import XiaocongDialog from '@/components/XiaocongDialog';
 
@@ -38,6 +38,9 @@ interface ErrorItem {
   reheat_count?: number;
   image_path?: string;
   error_type?: string;
+  rehab_status?: 'pending' | 'guided' | 'recovered' | string;
+  rehab_started_at?: string;
+  rehab_completed_at?: string;
 }
 
 interface VenueMap {
@@ -94,7 +97,22 @@ export default function StudentErrors() {
   const [expandedPlans, setExpandedPlans] = useState<Record<number, boolean>>({});
   const [diagnosisMap, setDiagnosisMap] = useState<Record<number, string>>({});
   const [diagnosing, setDiagnosing] = useState<Record<number, boolean>>({});
-  const [stats, setStats] = useState({ unresolved: 0, resolved: 0, total: 0 });
+  const [stats, setStats] = useState({
+    unresolved: 0,
+    resolved: 0,
+    total: 0,
+    rehab_pending: 0,
+    rehab_guided: 0,
+    rehab_recovered: 0,
+  } as {
+    unresolved: number;
+    resolved: number;
+    total: number;
+    rehab_pending: number;
+    rehab_guided: number;
+    rehab_recovered: number;
+    [key: string]: number;
+  });
   const [token, setToken] = useState<string>('');
   const [breakthroughOpen, setBreakthroughOpen] = useState(false);
   const [breakthroughLoading, setBreakthroughLoading] = useState(false);
@@ -171,6 +189,65 @@ export default function StudentErrors() {
   const [similarCurrentIdx, setSimilarCurrentIdx] = useState(0);
   const [similarDone, setSimilarDone] = useState(false);
 
+  // ===== 错题康复流程（pending → guided → recovered） =====
+  const [rehabBusyId, setRehabBusyId] = useState<number | null>(null);
+  const [rehabToast, setRehabToast] = useState<{ errorId: number; type: 'recovered'; at: number } | null>(null);
+  // 作答+类似题内嵌面板：哪个错题处于展开状态（同一时刻只允许 1 个）
+  const [rehabPanel, setRehabPanel] = useState<number | null>(null);
+  const toggleRehabPanel = (id: number) => {
+    setRehabPanel((cur) => (cur === id ? null : id));
+  };
+  const closeRehabPanel = (id: number) => {
+    setRehabPanel((cur) => (cur === id ? null : cur));
+  };
+
+  // 单卡康复阶段归一化：兼容后端缺省值
+  const rehabStageOf = (e: ErrorItem): 'pending' | 'guided' | 'recovered' => {
+    const raw = (e.rehab_status || 'pending') as 'pending' | 'guided' | 'recovered';
+    if (e.status === 'resolved' && raw === 'pending') return 'guided'; // 已订正但还未走完康复 → 看作 guided
+    return raw;
+  };
+
+  // 触发小聪对话前自动 start rehab
+  const openXiaocongWithRehab = async (error: ErrorItem) => {
+    if (!token) {
+      openXiaocongForError(error);
+      return;
+    }
+    const stage = rehabStageOf(error);
+    if (stage === 'pending') {
+      try {
+        setRehabBusyId(error.id);
+        await startRehab(token, error.id);
+        // 不刷新页面，让小聪对话返回的 rehab_status 触发下一步
+      } catch (err) {
+        console.warn('[rehab] start failed, fallback to opening xiaocong', err);
+      } finally {
+        setRehabBusyId(null);
+      }
+    }
+    openXiaocongForError(error);
+  };
+
+  // 标记该错题康复完成（rehab_status: guided → recovered）
+  const markRehabComplete = async (e: ErrorItem) => {
+    if (!token) return;
+    try {
+      setRehabBusyId(e.id);
+      await completeRehab(token, e.id, 'similar');
+      // 乐观更新本地
+      setErrors((prev) => prev.map((it) => (it.id === e.id ? { ...it, rehab_status: 'recovered' } : it)));
+      setRehabToast({ errorId: e.id, type: 'recovered', at: Date.now() });
+      // 5s 后隐藏
+      setTimeout(() => setRehabToast((t) => (t && t.errorId === e.id ? null : t)), 5200);
+    } catch (err: any) {
+      console.error('[rehab] complete failed', err);
+      alert(err?.message || '标记康复失败，请稍后重试');
+    } finally {
+      setRehabBusyId(null);
+    }
+  };
+
   useEffect(() => {
     const u = getStoredUser();
     const t = getToken();
@@ -196,6 +273,9 @@ export default function StudentErrors() {
         unresolved: dashRes?.unresolved_errors || errorRes?.stats?.unresolved || 0,
         resolved: dashRes?.resolved_errors || errorRes?.stats?.resolved || 0,
         total: dashRes?.total_errors || errorRes?.stats?.total || 0,
+        rehab_pending: errorRes?.stats?.rehab_pending || 0,
+        rehab_guided: errorRes?.stats?.rehab_guided || 0,
+        rehab_recovered: errorRes?.stats?.rehab_recovered || 0,
       });
       setReheatStats(reheatRes?.stats || { total_resolved: 0, pending_count: 0, mastered_count: 0 });
     } catch (e) {
@@ -345,16 +425,12 @@ export default function StudentErrors() {
     try {
       const res = await similarQuestions(guidedData.error_id, token, 3);
       console.log('[similar] response:', res);
-      if (res?.success && res.data) {
-        const d = res.data;
-        if (Array.isArray(d.questions) && d.questions.length > 0) {
-          setSimilarData(d);
-        } else {
-          alert('类似题生成失败');
-          setSimilarOpen(false);
-        }
+      // 后端直接返回 {error_id, knowledge_point, questions:[...]}，fetchAPI 不加 success 包装
+      const d: any = (res as any)?.data ?? res;
+      if (Array.isArray(d?.questions) && d.questions.length > 0) {
+        setSimilarData(d);
       } else {
-        alert(res?.message || '类似题生成失败');
+        alert('类似题生成失败');
         setSimilarOpen(false);
       }
     } catch (e: any) {
@@ -645,28 +721,39 @@ export default function StudentErrors() {
         </div>
       </section>
 
-      {/* ============= 统计 ============= */}
-      <section className="grid grid-cols-3 gap-4">
-        <div className="glass-card p-5 text-center" style={{ background: 'rgba(255, 138, 138, 0.12)' }}>
-          <div className="w-11 h-11 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
+      {/* ============= 统计（康复阶段视角） ============= */}
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* 待处理：还没开始康复 */}
+        <div className="glass-card p-4 text-center" style={{ background: 'rgba(255, 138, 138, 0.12)' }}>
+          <div className="w-10 h-10 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
             <AlertCircle className="w-5 h-5" style={{ color: '#FF8A8A' }} />
           </div>
-          <div className="text-2xl font-black" style={{ color: '#D04040' }}>{stats.unresolved}</div>
-          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>待救助动物（只）</div>
+          <div className="text-xl font-black" style={{ color: '#D04040' }}>{stats.rehab_pending ?? stats.unresolved}</div>
+          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>待处理</div>
         </div>
-        <div className="glass-card p-5 text-center" style={{ background: 'rgba(255, 184, 108, 0.15)' }}>
-          <div className="w-11 h-11 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
+        {/* 康复中：已开始（点小聪/分步引导/闯关）但还没订正 */}
+        <div className="glass-card p-4 text-center" style={{ background: 'rgba(255, 184, 108, 0.15)' }}>
+          <div className="w-10 h-10 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
             <Activity className="w-5 h-5" style={{ color: '#FFB86C' }} />
           </div>
-          <div className="text-2xl font-black" style={{ color: '#8B5A1B' }}>{stats.total}</div>
-          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>累计错题（道）</div>
+          <div className="text-xl font-black" style={{ color: '#8B5A1B' }}>{stats.rehab_guided ?? 0}</div>
+          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>康复中</div>
         </div>
-        <div className="glass-card p-5 text-center" style={{ background: 'rgba(115, 192, 103, 0.15)' }}>
-          <div className="w-11 h-11 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
+        {/* 已康复 */}
+        <div className="glass-card p-4 text-center" style={{ background: 'rgba(115, 192, 103, 0.15)' }}>
+          <div className="w-10 h-10 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
             <Heart className="w-5 h-5" style={{ color: '#73C067' }} />
           </div>
-          <div className="text-2xl font-black" style={{ color: '#2D5A27' }}>{stats.resolved}</div>
-          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>已康复（只）</div>
+          <div className="text-xl font-black" style={{ color: '#2D5A27' }}>{stats.rehab_recovered ?? 0}</div>
+          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>已康复</div>
+        </div>
+        {/* 累计 */}
+        <div className="glass-card p-4 text-center" style={{ background: 'rgba(149, 216, 240, 0.15)' }}>
+          <div className="w-10 h-10 mx-auto mb-2 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 255, 255, 0.7)' }}>
+            <Stethoscope className="w-5 h-5" style={{ color: '#2D7A8E' }} />
+          </div>
+          <div className="text-xl font-black" style={{ color: '#2D5A6E' }}>{stats.total}</div>
+          <div className="text-xs mt-1 font-semibold" style={{ color: '#8B7355' }}>累计错题</div>
         </div>
       </section>
 
@@ -1111,6 +1198,7 @@ export default function StudentErrors() {
             const questionContent = error.question_text || error.content || '';
             const correctAns = error.correct_answer || error.question_answer || '';
             const studentAns = error.student_answer || '(未记录)';
+            const stage = rehabStageOf(error);
 
             return (
               <article key={error.id} className="glass-card-solid p-5">
@@ -1161,25 +1249,62 @@ export default function StudentErrors() {
                         <Award className="w-3 h-3 inline mr-0.5" />已掌握
                       </span>
                     )}
-                    {isPending ? (
-                      <span
-                        className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold"
-                        style={{ background: 'rgba(255, 138, 138, 0.18)', color: '#D04040' }}
-                      >
-                        <HeartPulse className="w-3 h-3" />
-                        待救助
-                      </span>
-                    ) : !error.needs_reheat && error.reheat_status !== 'mastered' ? (
-                      <span
-                        className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold"
-                        style={{ background: 'rgba(115, 192, 103, 0.18)', color: '#2D5A27' }}
-                      >
-                        <Heart className="w-3 h-3" />
-                        已康复
-                      </span>
-                    ) : null}
+                    {/* 康复阶段徽章（pending/guided/recovered） */}
+                    {(() => {
+                      const stage = rehabStageOf(error);
+                      if (stage === 'recovered') {
+                        return (
+                          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold" style={{ background: 'rgba(115, 192, 103, 0.18)', color: '#2D5A27' }}>
+                            <Heart className="w-3 h-3" />
+                            已康复
+                          </span>
+                        );
+                      }
+                      if (stage === 'guided') {
+                        return (
+                          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold" style={{ background: 'rgba(255, 184, 108, 0.2)', color: '#8B5A1B' }}>
+                            <Activity className="w-3 h-3" />
+                            康复中
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold" style={{ background: 'rgba(255, 138, 138, 0.18)', color: '#D04040' }}>
+                          <HeartPulse className="w-3 h-3" />
+                          待处理
+                        </span>
+                      );
+                    })()}
                   </div>
                 </header>
+
+                {/* 康复进度条 */}
+                {(() => {
+                  const stage = rehabStageOf(error);
+                  const stepLabel: Record<'pending' | 'guided' | 'recovered', string> = {
+                    pending: '待处理 → 让小聪对话引导 → 订正完成',
+                    guided: '康复中 → 完成订正后标记康复',
+                    recovered: '已康复 ✨',
+                  };
+                  const filled = stage === 'pending' ? 1 : stage === 'guided' ? 2 : 3;
+                  const bg = stage === 'recovered' ? 'linear-gradient(90deg,#73C067,#5AA649)' : 'linear-gradient(90deg,#FFB86C,#FF8A8A)';
+                  return (
+                    <div className="mb-3 rounded-xl px-3 py-2" style={{ background: 'rgba(255,248,240,0.7)', border: '1px dashed rgba(139,92,246,0.25)' }}>
+                      <div className="flex items-center gap-1 mb-1">
+                        {[1, 2, 3].map((i) => (
+                          <div
+                            key={i}
+                            className="flex-1 h-1.5 rounded-full transition-all"
+                            style={{ background: i <= filled ? bg : 'rgba(200, 230, 192, 0.4)' }}
+                          />
+                        ))}
+                      </div>
+                      <p className="text-[11px] font-semibold" style={{ color: stage === 'recovered' ? '#2D5A27' : stage === 'guided' ? '#8B5A1B' : '#8B7355' }}>
+                        {stepLabel[stage]}
+                      </p>
+                    </div>
+                  );
+                })()}
 
                 {/* Question content */}
                 <div className="rounded-2xl p-4 mb-4" style={{ background: 'rgba(255, 248, 240, 0.8)' }}>
@@ -1228,26 +1353,28 @@ export default function StudentErrors() {
 
                 {/* Action row */}
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  {isPending ? (
+                  {stage === 'recovered' ? (
+                    <span className="text-sm font-bold inline-flex items-center gap-1.5" style={{ color: '#2D5A27' }}>
+                      <Heart className="w-4 h-4" />
+                      已成功救助！小动物恢复健康啦~
+                    </span>
+                  ) : (
                     <div className="flex items-center gap-2 flex-wrap">
+                      {/* 主按钮：开始救助 → 展开作答面板 */}
                       <button
-                        onClick={() => handleDiagnose(error)}
-                        disabled={isDiagnosing}
+                        onClick={() => toggleRehabPanel(error.id)}
+                        disabled={rehabBusyId === error.id || rehabPanel === error.id}
+                        data-testid={`btn-rehab-start-${error.id}`}
                         className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60"
                         style={{
                           background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)',
                           boxShadow: '0 4px 14px rgba(115, 192, 103, 0.3)',
                         }}
                       >
-                        {isDiagnosing ? (
+                        {rehabPanel === error.id ? (
                           <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            AI 诊断中...
-                          </>
-                        ) : diagnosis ? (
-                          <>
-                            <Stethoscope className="w-4 h-4" />
-                            {isExpanded ? '收起救助方案' : '查看救助方案'}
+                            <ChevronUp className="w-4 h-4" />
+                            收起救助面板
                           </>
                         ) : (
                           <>
@@ -1256,27 +1383,11 @@ export default function StudentErrors() {
                           </>
                         )}
                       </button>
+                      {/* 副按钮：AI 分步引导 → 直接进小聪对话 */}
                       {token && (
                         <button
-                          onClick={() => openXiaocongForError(error)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold text-white transition-all hover:scale-[1.02] active:scale-[0.98]"
-                          style={{
-                            background: 'linear-gradient(135deg, #FFB86C 0%, #FF7F50 100%)',
-                            boxShadow: '0 4px 14px rgba(255, 184, 108, 0.35)',
-                          }}
-                        >
-                          <Brain className="w-4 h-4" />
-                          🦊 让小聪对话引导
-                        </button>
-                      )}
-                      {token && (
-                        <button
-                          onClick={() => {
-                            // 优先用 error.question_text；若空则用后端联表 questions.content 兜底
-                            const text = (error.question_text || error.content || '').trim();
-                            handleStartGuided(error, text);
-                          }}
-                          disabled={guidedLoading}
+                          onClick={() => openXiaocongWithRehab(error)}
+                          disabled={rehabBusyId === error.id}
                           data-testid={`btn-guided-${error.id}`}
                           className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60"
                           style={{
@@ -1289,61 +1400,44 @@ export default function StudentErrors() {
                           AI 分步引导
                         </button>
                       )}
-                      {token && (
-                        <button
-                          onClick={() => handleResolve(error.id)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full text-sm font-semibold transition-all hover:scale-[1.02]"
-                          style={{
-                            background: 'rgba(255, 255, 255, 0.7)',
-                            border: '1.5px solid rgba(115, 192, 103, 0.4)',
-                            color: '#2D5A27',
-                          }}
-                        >
-                          <Check className="w-4 h-4" />
-                          已康复 +10
-                        </button>
-                      )}
                     </div>
-                  ) : (
-                    <span className="text-sm font-bold inline-flex items-center gap-1.5" style={{ color: '#2D5A27' }}>
-                      <Heart className="w-4 h-4" />
-                      已成功救助！小动物恢复健康啦~
-                    </span>
-                  )}
-                  {diagnosis && (
-                    <button
-                      onClick={() => setExpandedPlans((prev) => ({ ...prev, [error.id]: !prev[error.id] }))}
-                      className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-semibold transition-all"
-                      style={{
-                        background: 'rgba(255, 255, 255, 0.7)',
-                        border: '1.5px solid rgba(200, 230, 192, 0.6)',
-                        color: '#8B7355',
-                      }}
-                    >
-                      {isExpanded ? '收起' : '展开'}
-                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    </button>
                   )}
                 </div>
 
-                {/* AI Diagnosis (collapsible) */}
-                {isExpanded && diagnosis && (
-                  <div
-                    className="mt-4 p-4 rounded-2xl"
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(232, 245, 228, 0.85), rgba(200, 230, 192, 0.5))',
-                      border: '1.5px dashed rgba(115, 192, 103, 0.5)',
+                {/* 作答+类似题 内嵌康复面板 */}
+                {rehabPanel === error.id && stage !== 'recovered' && (
+                  <RehabInlinePanel
+                    error={error}
+                    token={token}
+                    onClose={() => closeRehabPanel(error.id)}
+                    onXiaocongNeeded={() => openXiaocongWithRehab(error)}
+                    onRecovered={async (via) => {
+                      // 全对完成康复：乐观更新 + toast
+                      setErrors((prev) => prev.map((it) =>
+                        it.id === error.id
+                          ? { ...it, rehab_status: 'recovered', status: 'resolved' }
+                          : it
+                      ));
+                      setStats((prev) => ({
+                        ...prev,
+                        rehab_pending: Math.max(0, prev.rehab_pending - 1),
+                        rehab_guided: stage === 'guided' ? Math.max(0, prev.rehab_guided - 1) : prev.rehab_guided,
+                        rehab_recovered: prev.rehab_recovered + 1,
+                        resolved: prev.resolved + 1,
+                      }));
+                      setRehabToast({ errorId: error.id, type: 'recovered', at: Date.now() });
+                      setTimeout(() => setRehabToast((t) => (t && t.errorId === error.id ? null : t)), 5200);
+                      closeRehabPanel(error.id);
+                      // 后端兜底（失败不影响 UI）
+                      try {
+                        await completeRehab(token, error.id, via);
+                      } catch (e) {
+                        console.warn('[rehab] complete api failed, but UI already updated', e);
+                      }
                     }}
-                  >
-                    <p className="text-sm font-bold mb-2 flex items-center gap-1.5" style={{ color: '#2D5A27' }}>
-                      <Sparkles className="w-4 h-4" style={{ color: '#FFB86C' }} />
-                      AI 兽医诊断引导：
-                    </p>
-                    <div className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: '#4A3728' }}>
-                      {diagnosis}
-                    </div>
-                  </div>
+                  />
                 )}
+
               </article>
             );
           })}
@@ -1712,7 +1806,7 @@ export default function StudentErrors() {
       {errors.length > 0 && stats.unresolved > 0 && (
         <div className="text-center pt-2">
           <p className="text-sm italic" style={{ color: '#8B7355' }}>
-            🌟 还有 {stats.unresolved} 只小动物等待救助，点击「开始救助」让 AI 兽医帮忙诊断，或点「让小聪对话引导」开启多轮对话~
+            🌟 还有 {stats.unresolved} 只小动物等待救助，点击「开始救助」让 AI 带你一步步康复，或点「AI 分步引导」开启小聪多轮对话~
           </p>
         </div>
       )}
@@ -1727,7 +1821,328 @@ export default function StudentErrors() {
           correctAnswer={xiaocongTarget.correctAnswer}
           knowledgePoint={xiaocongTarget.knowledgePoint}
           onClose={() => setXiaocongOpen(false)}
+          onStageDone={(payload) => {
+            // 小聪进入 done 阶段时尝试自动标记康复（仅当前错题已订正 status='resolved'）
+            const target = errors.find((e) => e.id === payload.errorNoteId);
+            if (!target) return;
+            if (target.status !== 'resolved') return; // 未订正不强制标记
+            void markRehabComplete(target);
+          }}
         />
+      )}
+
+      {/* 康复成功 toast */}
+      {rehabToast && (
+        <div
+          className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl text-sm font-bold shadow-2xl"
+          style={{ background: 'linear-gradient(135deg, #73C067, #5CAF50)', color: '#fff', boxShadow: '0 8px 28px rgba(115,192,103,0.5)' }}
+        >
+          <Heart className="w-4 h-4 inline mr-1" />已康复 ✨ 小动物恢复健康啦~
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============= 作答+类似题 内嵌康复面板 =============
+interface RehabInlinePanelProps {
+  error: ErrorItem;
+  token: string;
+  onClose: () => void;
+  onXiaocongNeeded: () => void;
+  onRecovered: (via: 'similar') => void;
+}
+
+type Phase = 'answer' | 'judging' | 'xiaocong' | 'similar-loading' | 'similar-answering' | 'similar-done';
+
+function RehabInlinePanel({ error, token, onClose, onXiaocongNeeded, onRecovered }: RehabInlinePanelProps) {
+  const [phase, setPhase] = useState<Phase>('answer');
+  const [answer, setAnswer] = useState('');
+  const [judgeMsg, setJudgeMsg] = useState<string | null>(null);
+
+  // 类似题状态
+  const [similarQs, setSimilarQs] = useState<{ index: number; question: string; answer: string }[]>([]);
+  const [similarIdx, setSimilarIdx] = useState(0);
+  const [similarAns, setSimilarAns] = useState('');
+  const [similarResult, setSimilarResult] = useState<{ correct: boolean; correctAnswer: string } | null>(null);
+  const [similarResults, setSimilarResults] = useState<boolean[]>([]);
+  const [similarLoading, setSimilarLoading] = useState(false);
+  const [similarFinalCorrect, setSimilarFinalCorrect] = useState(false);
+
+  const correctAns = (error.correct_answer || error.question_answer || '').trim();
+  const questionContent = error.question_text || error.content || '';
+
+  // 归一化字符串：去空格、百分号、常见标点
+  const normalize = (s: string) =>
+    s.replace(/[\s,，%。、；：]/g, '').replace(/[×x*]/g, '*').replace(/[÷/]/g, '/').toLowerCase();
+  const isEquivalent = (a: string, b: string) => {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const na = normalize(a);
+    const nb = normalize(b);
+    if (na && na === nb) return true;
+    // 数字等价：纯数字字符串
+    const numA = parseFloat(a);
+    const numB = parseFloat(b);
+    if (!isNaN(numA) && !isNaN(numB) && Math.abs(numA - numB) < 1e-6) return true;
+    return false;
+  };
+
+  // ===== Step 1: 提交原题作答 =====
+  const submitOriginal = () => {
+    const trimmed = answer.trim();
+    if (!trimmed) {
+      setJudgeMsg('请先写下你的答案哦~');
+      return;
+    }
+    setJudgeMsg(null);
+    setPhase('judging');
+    // 前端判分（即时反馈，不依赖后端）
+    const ok = isEquivalent(trimmed, correctAns);
+    if (ok) {
+      setJudgeMsg('🎉 答对啦！');
+      // 直接进入类似题加载
+      loadSimilar();
+    } else {
+      setJudgeMsg('再想想？小聪来帮帮你~');
+      // 触发小聪对话（父组件负责打开 XiaocongDialog）
+      onXiaocongNeeded();
+      // 关闭作答面板，让学生专心对话
+      setTimeout(() => onClose(), 600);
+    }
+  };
+
+  // ===== 类似题加载（仅判对时触发） =====
+  const loadSimilar = async () => {
+    setPhase('similar-loading');
+    setSimilarLoading(true);
+    try {
+      const res = await similarQuestions(error.id, token, 3);
+      // 后端返回 {error_id, knowledge_point, questions:[{index,question,answer,...}]}
+      // 注意：api.ts 用 fetchAPI 包装后，如果后端直接返回对象，外层 res 就是数据本身
+      const data: any = (res as any)?.data ?? res;
+      const questions = data?.questions || [];
+      if (questions.length > 0) {
+        setSimilarQs(questions);
+        setSimilarIdx(0);
+        setSimilarAns('');
+        setSimilarResult(null);
+        setSimilarResults([]);
+        setSimilarFinalCorrect(false);
+        setPhase('similar-answering');
+      } else {
+        // 生成失败兜底：直接标记康复
+        setSimilarFinalCorrect(true);
+        setPhase('similar-done');
+      }
+    } catch (e) {
+      console.warn('[rehab] similar load failed, fallback to direct recover', e);
+      setSimilarFinalCorrect(true);
+      setPhase('similar-done');
+    } finally {
+      setSimilarLoading(false);
+    }
+  };
+
+  // ===== Step 2: 提交类似题作答 =====
+  const submitSimilar = () => {
+    const trimmed = similarAns.trim();
+    if (!trimmed) return;
+    const q = similarQs[similarIdx];
+    const ok = isEquivalent(trimmed, q.answer);
+    setSimilarResult({ correct: ok, correctAnswer: q.answer });
+    const newResults = [...similarResults, ok];
+    setSimilarResults(newResults);
+    if (ok) {
+      if (similarIdx < similarQs.length - 1) {
+        // 下一题
+        setTimeout(() => {
+          setSimilarIdx(similarIdx + 1);
+          setSimilarAns('');
+          setSimilarResult(null);
+        }, 1200);
+      } else {
+        // 最后一题也对了 → 看是否全对
+        const allOk = newResults.every((r) => r);
+        setSimilarFinalCorrect(allOk);
+        setPhase('similar-done');
+      }
+    } else {
+      // 这题错了 → 不算康复，但允许继续把剩下的做完
+      if (similarIdx < similarQs.length - 1) {
+        setTimeout(() => {
+          setSimilarIdx(similarIdx + 1);
+          setSimilarAns('');
+          setSimilarResult(null);
+        }, 1800);
+      } else {
+        setSimilarFinalCorrect(false);
+        setPhase('similar-done');
+      }
+    }
+  };
+
+  // ===== 类似题全对 → 触发父组件标记康复 =====
+  useEffect(() => {
+    if (phase === 'similar-done' && similarFinalCorrect) {
+      onRecovered('similar');
+    }
+  }, [phase, similarFinalCorrect, onRecovered]);
+
+  return (
+    <div
+      className="mt-4 p-4 rounded-2xl"
+      style={{
+        background: 'linear-gradient(135deg, rgba(232, 245, 228, 0.85), rgba(255, 248, 240, 0.85))',
+        border: '1.5px solid rgba(115, 192, 103, 0.35)',
+      }}
+    >
+      {/* ===== Phase: 原题作答 ===== */}
+      {(phase === 'answer' || phase === 'judging') && (
+        <div>
+          <p className="text-sm font-bold mb-2 flex items-center gap-1.5" style={{ color: '#2D5A27' }}>
+            <Pencil className="w-4 h-4" />
+            写一写你的答案
+          </p>
+          <p className="text-xs mb-3" style={{ color: '#8B7355' }}>
+            题目：{questionContent || '（原题缺失，请直接点 AI 分步引导）'}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="text"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitOriginal(); }}
+              placeholder="在这里写下你的答案"
+              disabled={phase === 'judging'}
+              className="flex-1 min-w-[120px] px-3 py-2 rounded-xl text-sm border-2 focus:outline-none"
+              style={{
+                background: 'rgba(255, 255, 255, 0.85)',
+                borderColor: 'rgba(115, 192, 103, 0.4)',
+                color: '#4A3728',
+              }}
+              data-testid={`rehab-input-${error.id}`}
+            />
+            <button
+              onClick={submitOriginal}
+              disabled={phase === 'judging'}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.02] disabled:opacity-60"
+              style={{
+                background: 'linear-gradient(135deg, #73C067, #5CAF50)',
+                boxShadow: '0 3px 10px rgba(115, 192, 103, 0.3)',
+              }}
+              data-testid={`rehab-submit-${error.id}`}
+            >
+              {phase === 'judging' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+              提交
+            </button>
+          </div>
+          {judgeMsg && (
+            <p className="text-xs mt-2 font-semibold" style={{ color: judgeMsg.includes('🎉') ? '#2D5A27' : '#D04040' }}>
+              {judgeMsg}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ===== Phase: 类似题加载 ===== */}
+      {phase === 'similar-loading' && (
+        <div className="text-center py-4">
+          <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" style={{ color: '#73C067' }} />
+          <p className="text-sm" style={{ color: '#8B7355' }}>AI 正在生成 3 道类似题让你巩固...</p>
+        </div>
+      )}
+
+      {/* ===== Phase: 类似题作答 ===== */}
+      {phase === 'similar-answering' && similarQs[similarIdx] && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-bold px-2 py-0.5 rounded-lg" style={{ background: 'rgba(139, 92, 246, 0.18)', color: '#6D28D9' }}>
+              类似题 {similarIdx + 1}/{similarQs.length}
+            </span>
+            <span className="text-xs" style={{ color: '#8B7355' }}>
+              答对全部 3 题即康复 ✨
+            </span>
+          </div>
+          <p className="text-sm mb-3" style={{ color: '#4A3728' }}>
+            {similarQs[similarIdx].question}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="text"
+              value={similarAns}
+              onChange={(e) => setSimilarAns(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitSimilar(); }}
+              placeholder="写下答案"
+              disabled={!!similarResult}
+              className="flex-1 min-w-[120px] px-3 py-2 rounded-xl text-sm border-2 focus:outline-none"
+              style={{
+                background: 'rgba(255, 255, 255, 0.85)',
+                borderColor: 'rgba(139, 92, 246, 0.4)',
+                color: '#4A3728',
+              }}
+              data-testid={`rehab-similar-input-${error.id}`}
+            />
+            <button
+              onClick={submitSimilar}
+              disabled={!!similarResult}
+              className="inline-flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.02] disabled:opacity-60"
+              style={{
+                background: 'linear-gradient(135deg, #8B5CF6, #6D28D9)',
+                boxShadow: '0 3px 10px rgba(139, 92, 246, 0.3)',
+              }}
+              data-testid={`rehab-similar-submit-${error.id}`}
+            >
+              <ArrowRight className="w-4 h-4" />
+              提交
+            </button>
+          </div>
+          {similarResult && (
+            <div className="mt-2 text-xs">
+              {similarResult.correct ? (
+                <p className="font-semibold" style={{ color: '#2D5A27' }}>
+                  ✅ 答对了！{similarIdx < similarQs.length - 1 ? '下一题...' : '马上完成！'}
+                </p>
+              ) : (
+                <p className="font-semibold" style={{ color: '#D04040' }}>
+                  ❌ 不对哦，正确答案是 <span className="font-mono">{similarResult.correctAnswer}</span>
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== Phase: 类似题结束 ===== */}
+      {phase === 'similar-done' && (
+        <div className="text-center py-3">
+          {similarFinalCorrect ? (
+            <>
+              <Sparkles className="w-6 h-6 mx-auto mb-1" style={{ color: '#73C067' }} />
+              <p className="text-sm font-bold" style={{ color: '#2D5A27' }}>
+                🎉 3 道类似题全部答对，已自动标记康复！
+              </p>
+            </>
+          ) : (
+            <>
+              <Heart className="w-6 h-6 mx-auto mb-1" style={{ color: '#FFB86C' }} />
+              <p className="text-sm font-bold" style={{ color: '#8B5A1B' }}>
+                这一轮没全对，再点「开始救助」重新挑战~ 或换「AI 分步引导」听小聪讲解
+              </p>
+              <button
+                onClick={onClose}
+                className="mt-3 inline-flex items-center gap-1 px-4 py-1.5 rounded-full text-xs font-semibold transition-all hover:scale-[1.02]"
+                style={{
+                  background: 'rgba(255, 255, 255, 0.7)',
+                  border: '1.5px solid rgba(139, 92, 246, 0.3)',
+                  color: '#6D28D9',
+                }}
+              >
+                收起面板
+              </button>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

@@ -9,6 +9,7 @@ import {
   chatWithXiaocong,
   resetXiaocongSession,
   getXiaocongStatus,
+  getXiaocongForError,
   type XiaocongStage,
   type XiaocongChatResult,
 } from '@/lib/api';
@@ -22,6 +23,8 @@ export interface XiaocongDialogProps {
   correctAnswer?: string;
   knowledgePoint?: string;
   onClose: () => void;
+  /** 阶段进入 done 时回调，父组件可据此触发康复完成标记 */
+  onStageDone?: (payload: { errorNoteId: number; summaryText: string; stage: string }) => void;
 }
 
 interface ChatMsg {
@@ -71,6 +74,7 @@ export default function XiaocongDialog({
   correctAnswer,
   knowledgePoint,
   onClose,
+  onStageDone,
 }: XiaocongDialogProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
@@ -115,9 +119,69 @@ export default function XiaocongDialog({
   useEffect(() => {
     if (!open || initStarted) return;
     setInitStarted(true);
-    startConversation();
+    loadOrStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initStarted]);
+
+  // 从 DB 加载已有对话历史（翻阅复用）
+  async function loadOrStart() {
+    const token = getToken();
+    if (!token) {
+      setError('未登录');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await getXiaocongForError(token, errorNoteId);
+      if (result.found && result.session && result.session.history.length > 0) {
+        // 复用已有对话：把历史回放到 messages
+        const sess = result.session;
+        const recoveredMsgs: ChatMsg[] = [];
+        for (let i = 0; i < sess.history.length; i++) {
+          const h = sess.history[i];
+          if (h.role === 'user') {
+            recoveredMsgs.push({
+              id: nextId(),
+              role: 'user',
+              content: h.content,
+            });
+          } else {
+            recoveredMsgs.push({
+              id: nextId(),
+              role: 'xiaocong',
+              content: h.content,
+              stage: sess.current_node as XiaocongStage,
+            });
+          }
+        }
+        setMessages(recoveredMsgs);
+        setStage(sess.current_node as XiaocongStage);
+        setStageLabel(STAGE_LABELS[sess.current_node as XiaocongStage]?.label || '引导中');
+        setRound(sess.round_count || 0);
+        setUserMastered(sess.user_mastered === 1);
+        setSummaryText(sess.summary_text || null);
+        setErrorType((sess.error_type as 'A' | 'B') || null);
+        setTopic(sess.topic || 'other');
+        setRecoveryQIndex(sess.recovery_q_index || 0);
+        // 重新进入历史已 done 的会话 → 也通知父组件
+        if ((sess.current_node as string) === 'done') {
+          onStageDone?.({
+            errorNoteId,
+            summaryText: sess.summary_text || '',
+            stage: 'done',
+          });
+        }
+        return;
+      }
+    } catch (e) {
+      // 加载失败时退化为全新开始
+    } finally {
+      setLoading(false);
+    }
+    // 没有历史 → 开启全新对话
+    await startConversation();
+  }
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight, behavior: 'smooth' });
@@ -209,6 +273,15 @@ export default function XiaocongDialog({
       setErrorType(resp.error_type ?? null);
       setTopic(resp.topic ?? 'other');
       setRecoveryQIndex(resp.recovery_q_index ?? 0);
+
+      // 阶段进入 done → 通知父组件（错题康复联动）
+      if (resp.stage === 'done') {
+        onStageDone?.({
+          errorNoteId,
+          summaryText: resp.summary_text || '',
+          stage: resp.stage,
+        });
+      }
     } catch (e: any) {
       setError(e?.message || '小聪正在休息中…请稍后再试');
       setMessages((prev) => [

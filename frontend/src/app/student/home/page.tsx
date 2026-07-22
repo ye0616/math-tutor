@@ -44,7 +44,9 @@ export default function StudentHome() {
     if (u) {
       setUser(u);
       loadData(u.id);
-      loadDailyFact();
+      if (u.role === 'student') {
+        loadDailyFact();
+      }
     } else {
       setLoading(false);
     }

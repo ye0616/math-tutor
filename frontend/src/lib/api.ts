@@ -212,8 +212,13 @@ export async function fetchQuestions(unitCode?: string, difficulty?: string) {
   return fetchAPI(`/teacher/questions${query}`);
 }
 
+function authHeaders(): Record<string, string> {
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 export async function fetchStudentDashboard(studentId: number) {
-  return fetchAPI(`/student/dashboard/${studentId}`);
+  return fetchAPI(`/student/dashboard/${studentId}`, { headers: authHeaders() });
 }
 
 export async function startLearning(studentId: number, topic: string, errorType?: string) {
@@ -323,6 +328,57 @@ export async function fetchGames() {
 
 export async function fetchPoints(studentId: number) {
   return fetchAPI(`/student/points/${studentId}`);
+}
+
+// ===== #192 成长手册 真实化 API =====
+export interface GrowthWeek {
+  week_label: string;
+  week_start: string;
+  rank: number;
+  points: number;
+  score: number;
+  questions: number;
+  correct: number;
+  correct_rate: number;
+  has_data: boolean;
+}
+export interface GrowthSummary {
+  total_questions: number;
+  total_correct: number;
+  correct_rate: number;
+  current_rank: number;
+  current_points: number;
+}
+export async function fetchGrowthCurve(weeks: number = 6): Promise<{ weeks: GrowthWeek[]; summary: GrowthSummary }> {
+  return fetchAPI(`/student/growth-curve?weeks=${weeks}`, { headers: authHeaders() });
+}
+
+export interface WeakTopic {
+  topic: string;
+  venue: string;
+  emoji: string;
+  accuracy: number;
+  error_count: number;
+  attempt_count: number;
+  unit_code: string;
+}
+export async function fetchWeakTopics(topN: number = 3): Promise<{ weak_topics: WeakTopic[]; total_topics: number }> {
+  return fetchAPI(`/student/weak-topics?top_n=${topN}`, { headers: authHeaders() });
+}
+
+export interface CollectionItem {
+  unit: string;
+  emoji: string;
+  name: string;
+  topic: string;
+  unlocked: boolean;
+  progress: number;
+  accuracy: number;
+  total_answered: number;
+  total_correct: number;
+}
+export async function fetchCollections(): Promise<{ collections: CollectionItem[] }> {
+  return fetchAPI(`/student/collections`, { headers: authHeaders() });
 }
 
 // ===== 班级管理 API =====
@@ -846,6 +902,14 @@ export interface PublishedAssignment {
   due_date: string | null;
   created_at: string;
   question_count: number;
+  questions?: Array<{
+    index?: number;
+    question_text: string;
+    correct_answer?: string;
+    analysis?: string;
+    knowledge_point?: string;
+    difficulty?: string;
+  }>;
   submitted: boolean;
   submission_status: string;
   correct_count?: number;
@@ -1267,6 +1331,8 @@ export interface ChallengeAnswerResult {
   is_correct: boolean;
   points_earned: number;
   correct_answer: string;
+  error_note_id?: number | null;
+  session_id?: number | null;
   error_analysis?: {
     knowledge_point: string;
     knowledge_explanation: string;
@@ -1343,6 +1409,81 @@ export async function submitSimilarAnswer(
     body: form,
     headers: { Authorization: `Bearer ${token}` },
     timeout: 60000,
+  });
+}
+
+export async function generateChallengeHint(
+  token: string,
+  data: { question: string; correct_answer: string; knowledge_point: string; student_answer?: string },
+): Promise<{ success: boolean; data: { hint: string; thinking_path: string } }> {
+  const form = new FormData();
+  form.append('question', data.question);
+  form.append('correct_answer', data.correct_answer);
+  form.append('knowledge_point', data.knowledge_point);
+  form.append('student_answer', data.student_answer || '');
+  return fetchAPI('/challenge/hint', {
+    method: 'POST',
+    body: form,
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 30000,
+  });
+}
+
+export async function getLessonStats(
+  token: string,
+  lesson_code: string,
+): Promise<{ success: boolean; data: { lesson_code: string; total: number; correct: number; accuracy: number } }> {
+  return fetchAPI(`/challenge/lesson-stats/${encodeURIComponent(lesson_code)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 10000,
+  });
+}
+
+export async function completeChallengeSession(
+  token: string,
+  session_id: number,
+): Promise<{ success: boolean; data: { already_completed: boolean; venue_unlocked_next: boolean; next_unit_code: string | null; completed_count: number } }> {
+  const form = new FormData();
+  form.append('session_id', String(session_id));
+  return fetchAPI('/challenge/complete', {
+    method: 'POST',
+    body: form,
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 10000,
+  });
+}
+
+// ======================== 错题康复流程（rehab） ========================
+
+export type RehabStatus = 'pending' | 'guided' | 'recovered';
+
+export interface RehabStats {
+  rehab_pending: number;
+  rehab_guided: number;
+  rehab_recovered: number;
+  [key: string]: number;
+}
+
+export async function startRehab(
+  token: string,
+  errorId: number,
+): Promise<{ error_id: number; rehab_status: RehabStatus; previous_status: RehabStatus }> {
+  return fetchAPI(`/student/errors/${errorId}/rehab/start`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function completeRehab(
+  token: string,
+  errorId: number,
+  via: 'xiaocong' | 'similar' | 'guided' | 'challenge' = 'similar',
+): Promise<{ error_id: number; rehab_status: RehabStatus; via: string | null; completed_at: string }> {
+  return fetchAPI(`/student/errors/${errorId}/rehab/complete`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ via }),
   });
 }
 
@@ -2082,6 +2223,70 @@ export async function resetXiaocongSession(token: string, errorNoteId: number) {
 
 export async function getXiaocongStatus(token: string, errorNoteId: number) {
   return fetchAPI(`/student/xiaocong/status/${errorNoteId}`, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+}
+
+// ===== 小聪历史翻阅记录 =====
+
+export interface XiaocongSessionSummary {
+  id: number;
+  student_id: number;
+  error_note_id: number;
+  question_text: string;
+  question_preview: string;
+  knowledge_point: string;
+  current_node: string;
+  error_type: string;
+  topic: string;
+  user_mastered: number;
+  summary_text: string;
+  message_count: number;
+  round_count: number;
+  status: string;        // active | completed | reset
+  started_at: string;
+  last_active_at: string;
+  completed_at: string | null;
+  err_kp?: string;
+}
+
+export interface XiaocongSessionDetail extends XiaocongSessionSummary {
+  student_answer: string;
+  correct_answer: string;
+  recovery_q_index: number;
+  history: { role: string; content: string }[];
+}
+
+export async function listXiaocongSessions(
+  token: string,
+  limit = 100
+): Promise<{ student_id: number; count: number; sessions: XiaocongSessionSummary[] }> {
+  return fetchAPI(`/student/xiaocong/sessions?limit=${limit}`, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+}
+
+export async function getXiaocongSession(
+  token: string,
+  sessionId: number
+): Promise<XiaocongSessionDetail> {
+  return fetchAPI(`/student/xiaocong/sessions/${sessionId}`, {
+    headers: { Authorization: 'Bearer ' + token },
+  });
+}
+
+export async function deleteXiaocongSession(token: string, sessionId: number) {
+  return fetchAPI(`/student/xiaocong/sessions/${sessionId}`, {
+    method: 'DELETE',
+    headers: { Authorization: 'Bearer ' + token },
+  });
+}
+
+export async function getXiaocongForError(
+  token: string,
+  errorNoteId: number
+): Promise<{ found: boolean; session: XiaocongSessionDetail | null }> {
+  return fetchAPI(`/student/xiaocong/error/${errorNoteId}`, {
     headers: { Authorization: 'Bearer ' + token },
   });
 }

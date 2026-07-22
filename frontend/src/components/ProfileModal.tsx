@@ -37,6 +37,7 @@ export default function ProfileModal({ open, onClose, theme }: ProfileModalProps
   useEffect(() => {
     if (open) {
       const u = getStoredUser();
+      console.log('[ProfileModal] open=true, user from storage:', u);
       setUser(u);
       setNameInput(u?.name || '');
       setMsg('');
@@ -48,7 +49,38 @@ export default function ProfileModal({ open, onClose, theme }: ProfileModalProps
     }
   }, [open]);
 
-  if (!open || !user) return null;
+  if (!open) return null;
+  if (!user) {
+    // open 状态下 user 仍为 null，说明 localStorage 已被清掉
+    // 显示提示而非空白，让用户能感知到发生了什么
+    return (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+        style={{ background: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(2px)' }}
+        onClick={onClose}
+      >
+        <div
+          className="relative w-full max-w-md rounded-2xl p-6 shadow-2xl text-center"
+          style={{
+            background: bgColor,
+            border: `2px solid ${borderColor}`,
+            fontFamily: isTeacher ? "'Noto Sans SC', system-ui, sans-serif" : "'Nunito', 'Noto Sans SC', system-ui, sans-serif",
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h2 className="text-lg font-bold mb-2" style={{ color: accentColor }}>登录已过期</h2>
+          <p className="text-sm mb-4" style={{ color: '#6B7280' }}>请重新登录后再打开个人中心</p>
+          <button
+            onClick={() => { onClose(); router.push('/'); }}
+            className="px-4 py-2 rounded-xl text-sm font-medium text-white"
+            style={{ background: accentColor }}
+          >
+            返回登录
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const avatarText = (user.name || '?')[0];
   const roleLabel = user.role === 'teacher' ? '教师' : user.role === 'student' ? '学生' : user.role === 'admin' ? '管理员' : user.role;

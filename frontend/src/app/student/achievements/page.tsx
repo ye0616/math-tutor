@@ -11,6 +11,8 @@ import {
   getStoredUser, getToken, fetchStudentDashboard,
   fetchRanking, fetchPoints,
   listStoreItems, redeemItem, myRedemptions,
+  fetchGrowthCurve, fetchWeakTopics, fetchCollections,
+  GrowthWeek, WeakTopic, CollectionItem,
   StoreItem, RedemptionRecord,
 } from '@/lib/api';
 
@@ -19,36 +21,23 @@ interface RankStudent { id: number; name: string; points: number; rank: number; 
 interface PointRecord { id: number; student_id: number; points: number; reason: string; created_at: string; }
 
 /* ============= Static data ============= */
-const collections = [
-  { emoji: '🐘', name: '大象', topic: '小数乘除', unlocked: true, progress: 65 },
-  { emoji: '🐵', name: '猴子', topic: '简易方程', unlocked: true, progress: 40 },
-  { emoji: '🦒', name: '长颈鹿', topic: '多边形面积', unlocked: true, progress: 100 },
-  { emoji: '🐰', name: '兔子', topic: '因数倍数', unlocked: false, progress: 0 },
-  { emoji: '🦛', name: '河马', topic: '长正方体', unlocked: false, progress: 0 },
-  { emoji: '🐦', name: '小鸟', topic: '分数运算', unlocked: true, progress: 20 },
-  { emoji: '🐧', name: '企鹅', topic: '统计可能性', unlocked: true, progress: 80 },
-  { emoji: '🦁', name: '狮王', topic: '拓展难题', unlocked: false, progress: 0 },
-];
+// 注意：collections / growthData / weakPoints 全部已改为从后端 API 拉真实数据
+// (#192 成长手册曲线真实化)
+// (#206 等级 + 积分 + 商城全部用真实数据)
 
-const growthData = [
-  { week: '第1周', score: 320 },
-  { week: '第2周', score: 580 },
-  { week: '第3周', score: 750 },
-  { week: '第4周', score: 980 },
-  { week: '第5周', score: 1100 },
-  { week: '第6周', score: 1280 },
-];
-
-const weakPoints = [
-  { topic: '因数与倍数', venue: '兔子繁殖屋', emoji: '🐰', accuracy: 45 },
-  { topic: '长方体体积', venue: '河马水池', emoji: '🦛', accuracy: 52 },
-  { topic: '分数通分', venue: '小鸟喂食台', emoji: '🐦', accuracy: 60 },
-];
+/* ============= 等级计算（基于真实积分） ============= */
+interface LevelInfo { level: number; title: string; nextTitle: string; nextPoints: number; progress: number; }
+function computeLevel(points: number): LevelInfo {
+  if (points >= 500) return { level: 5, title: '首席饲养员', nextTitle: '已达最高等级', nextPoints: 0, progress: 100 };
+  if (points >= 200) return { level: 4, title: '资深饲养员', nextTitle: '首席饲养员', nextPoints: 500, progress: Math.min(100, (points / 500) * 100) };
+  if (points >= 80)  return { level: 3, title: '高级饲养员', nextTitle: '资深饲养员', nextPoints: 200, progress: ((points - 80) / (200 - 80)) * 100 };
+  if (points >= 20)  return { level: 2, title: '初级饲养员', nextTitle: '高级饲养员', nextPoints: 80,  progress: ((points - 20) / (80 - 20)) * 100 };
+  return                  { level: 1, title: '实习饲养员', nextTitle: '初级饲养员', nextPoints: 20,  progress: (points / 20) * 100 };
+}
 
 /* ============= Main component ============= */
 export default function StudentAchievements() {
   const [tab, setTab] = useState<'growth' | 'ranking' | 'store'>('growth');
-  const maxScore = Math.max(...growthData.map((d) => d.score));
 
   return (
     <div className="space-y-5">
@@ -59,7 +48,7 @@ export default function StudentAchievements() {
         <TabButton active={tab === 'store'} onClick={() => setTab('store')} icon={Gift} label="积分商城" />
       </div>
 
-      {tab === 'growth' && <GrowthTab maxScore={maxScore} />}
+      {tab === 'growth' && <GrowthTab />}
       {tab === 'ranking' && <RankingTab />}
       {tab === 'store' && <StoreTab />}
     </div>
@@ -85,21 +74,38 @@ function TabButton({ active, onClick, icon: Icon, label }: {
 }
 
 /* ============= Growth Tab ============= */
-function GrowthTab({ maxScore }: { maxScore: number }) {
+function GrowthTab() {
   const [user, setUser] = useState<any>(null);
   const [dashData, setDashData] = useState<any>(null);
+  const [growthWeeks, setGrowthWeeks] = useState<GrowthWeek[]>([]);
+  const [weakTopics, setWeakTopics] = useState<WeakTopic[]>([]);
+  const [collections, setCollections] = useState<CollectionItem[]>([]);
+  const [loadingGrowth, setLoadingGrowth] = useState(true);
 
   useEffect(() => {
     const u = getStoredUser();
     if (u) {
       setUser(u);
-      fetchStudentDashboard(u.id).then(setDashData).catch(() => {});
+      Promise.all([
+        fetchStudentDashboard(u.id).then(setDashData).catch(() => {}),
+        fetchGrowthCurve(6).then(d => setGrowthWeeks(d.weeks || [])).catch(() => {}),
+        fetchWeakTopics(3).then(d => setWeakTopics(d.weak_topics || [])).catch(() => {}),
+        fetchCollections().then(d => setCollections(d.collections || [])).catch(() => {}),
+      ]).finally(() => setLoadingGrowth(false));
+    } else {
+      setLoadingGrowth(false);
     }
   }, []);
 
-  const totalPoints = dashData?.total_points || user?.points || 0;
-  const rank = dashData?.rank || 0;
-  const unlockedVenues = dashData?.unlocked_venues || 0;
+  // 重新计算 maxScore 用于归一化柱子高度（基于真实数据）
+  const maxScore = Math.max(1, ...growthWeeks.filter(w => w.has_data).map(w => w.score));
+
+  // 优先用 dashData（最新真实数据），兜底用 user 缓存
+  const totalPoints = dashData?.total_points ?? user?.points ?? 0;
+  const rank = dashData?.rank ?? 0;
+  const unlockedVenues = dashData?.unlocked_venues ?? 0;
+  const totalVenues = dashData?.total_venues ?? 8;
+  const levelInfo = computeLevel(totalPoints);
 
   return (
     <>
@@ -117,19 +123,26 @@ function GrowthTab({ maxScore }: { maxScore: number }) {
             <h1 className="text-xl font-bold" style={{ color: '#4A3728' }}>我的饲养成长图鉴</h1>
             <p className="text-sm mt-1 inline-flex items-center gap-1.5" style={{ color: '#8B7355' }}>
               <Sparkles className="w-3.5 h-3.5" style={{ color: '#FFB86C' }} />
-              Lv.5 资深饲养员
+              Lv.{levelInfo.level} {levelInfo.title}
+              <span className="ml-2 text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(255,184,108,0.15)', color: '#B8860B' }}>
+                距「{levelInfo.nextTitle}」{levelInfo.nextPoints > 0 ? `还差 ${(levelInfo.nextPoints - totalPoints).toFixed(1)} 分` : ''}
+              </span>
             </p>
+            {/* 等级进度条 */}
+            <div className="mt-2 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(200,230,192,0.4)' }}>
+              <div className="h-full rounded-full transition-all" style={{ width: `${levelInfo.progress}%`, background: 'linear-gradient(90deg, #FFB86C, #73C067)' }} />
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-3 gap-3 mt-5">
           <div className="text-center p-3 rounded-2xl" style={{ background: 'rgba(255,255,255,0.7)' }}>
             <Coins className="w-4 h-4 mx-auto mb-1" style={{ color: '#FFB86C' }} />
-            <p className="text-lg font-bold" style={{ color: '#FFB86C' }}>{totalPoints}</p>
+            <p className="text-lg font-bold" style={{ color: '#FFB86C' }}>{Number(totalPoints).toFixed(1)}</p>
             <p className="text-xs mt-0.5" style={{ color: '#8B7355' }}>饲料币</p>
           </div>
           <div className="text-center p-3 rounded-2xl" style={{ background: 'rgba(255,255,255,0.7)' }}>
             <Trophy className="w-4 h-4 mx-auto mb-1" style={{ color: '#73C067' }} />
-            <p className="text-lg font-bold" style={{ color: '#2D5A27' }}>{unlockedVenues}/8</p>
+            <p className="text-lg font-bold" style={{ color: '#2D5A27' }}>{unlockedVenues}/{totalVenues}</p>
             <p className="text-xs mt-0.5" style={{ color: '#8B7355' }}>通关场馆</p>
           </div>
           <div className="text-center p-3 rounded-2xl" style={{ background: 'rgba(255,255,255,0.7)' }}>
@@ -144,6 +157,9 @@ function GrowthTab({ maxScore }: { maxScore: number }) {
       <section className="glass-card-solid p-5">
         <h2 className="text-base font-bold mb-4 flex items-center gap-2" style={{ color: '#4A3728' }}>
           <Map className="w-5 h-5" style={{ color: '#73C067' }} />动物园全景图鉴
+          <span className="ml-1 text-xs font-normal" style={{ color: '#8B7355' }}>
+            （已解锁 {collections.filter(c => c.unlocked).length}/8）
+          </span>
         </h2>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {collections.map((item) => (
@@ -172,42 +188,88 @@ function GrowthTab({ maxScore }: { maxScore: number }) {
       <section className="glass-card-solid p-5">
         <h2 className="text-base font-bold mb-4 flex items-center gap-2" style={{ color: '#4A3728' }}>
           <TrendingUp className="w-5 h-5" style={{ color: '#73C067' }} />成长曲线
+          {loadingGrowth && <span className="ml-2 inline-block w-3 h-3 border-2 border-[#73C067] border-t-transparent rounded-full animate-spin" />}
         </h2>
         <div className="flex items-end gap-2 h-36">
-          {growthData.map((data, i) => {
-            const height = (data.score / maxScore) * 100;
-            const isLatest = i === growthData.length - 1;
+          {growthWeeks.length === 0 && !loadingGrowth && (
+            <p className="text-sm flex-1 text-center" style={{ color: '#8B7355' }}>暂无成长数据，去答题解锁曲线吧~</p>
+          )}
+          {growthWeeks.map((data, i) => {
+            const isLatest = i === growthWeeks.length - 1;
+            const hasData = data.has_data && data.score > 0;
+            const height = hasData ? (data.score / maxScore) * 100 : 8; // 无数据 = 8% 占位高度
             return (
-              <div key={data.week} className="flex-1 flex flex-col items-center gap-1.5">
-                <span className="text-xs font-bold" style={{ color: isLatest ? '#2D5A27' : '#8B7355' }}>{data.score}</span>
+              <div key={data.week_start} className="flex-1 flex flex-col items-center gap-1.5">
+                <span className="text-xs font-bold" style={{ color: hasData ? (isLatest ? '#2D5A27' : '#8B7355') : '#C0C0C0' }}>
+                  {hasData ? data.score : '暂无'}
+                </span>
                 <div className="w-full flex-1 flex items-end">
-                  <div className="w-full rounded-t-lg transition-all"
+                  <div className="w-full rounded-t-lg transition-all relative"
                     style={{
                       height: `${height}%`, minHeight: '8px',
-                      background: isLatest ? 'linear-gradient(180deg, #73C067, #5CAF50)' : 'linear-gradient(180deg, rgba(200,230,192,0.9), rgba(200,230,192,0.5))',
-                      boxShadow: isLatest ? '0 -2px 8px rgba(115,192,103,0.3)' : 'none',
-                    }} />
+                      background: !hasData
+                        ? 'repeating-linear-gradient(45deg, rgba(200,200,200,0.3) 0px, rgba(200,200,200,0.3) 4px, rgba(220,220,220,0.3) 4px, rgba(220,220,220,0.3) 8px)'
+                        : isLatest
+                          ? 'linear-gradient(180deg, #73C067, #5CAF50)'
+                          : 'linear-gradient(180deg, rgba(200,230,192,0.9), rgba(200,230,192,0.5))',
+                      boxShadow: isLatest && hasData ? '0 -2px 8px rgba(115,192,103,0.3)' : 'none',
+                    }}
+                    title={hasData ? `${data.week_start}｜${data.score}分｜${data.questions}题｜${data.correct_rate}%正确率` : `${data.week_start}｜暂无数据`} />
                 </div>
-                <span className="text-xs" style={{ color: '#8B7355' }}>{data.week.replace('第', '').replace('周', '')}</span>
+                <span className="text-xs" style={{ color: '#8B7355' }}>{data.week_label.replace('W-', '')}</span>
               </div>
             );
           })}
         </div>
+        {/* 曲线下方统计摘要 */}
+        {growthWeeks.length > 0 && growthWeeks.some(w => w.has_data) && (
+          <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t" style={{ borderColor: 'rgba(200,230,192,0.3)' }}>
+            <div className="text-center">
+              <p className="text-xs" style={{ color: '#8B7355' }}>累计答题</p>
+              <p className="text-lg font-bold mt-0.5" style={{ color: '#4A3728' }}>
+                {Math.round(growthWeeks.reduce((s, w) => s + w.questions, 0))}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-xs" style={{ color: '#8B7355' }}>平均正确率</p>
+              <p className="text-lg font-bold mt-0.5" style={{ color: '#5CAF50' }}>
+                {(() => {
+                  const valid = growthWeeks.filter(w => w.has_data && w.questions > 0);
+                  if (valid.length === 0) return '0%';
+                  const avg = valid.reduce((s, w) => s + w.correct_rate, 0) / valid.length;
+                  return `${avg.toFixed(1)}%`;
+                })()}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-xs" style={{ color: '#8B7355' }}>当前积分</p>
+              <p className="text-lg font-bold mt-0.5" style={{ color: '#FFB86C' }}>
+                {growthWeeks.length > 0 ? growthWeeks[growthWeeks.length - 1].score : 0}
+              </p>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Weak points */}
       <section className="glass-card-solid p-5">
         <h2 className="text-base font-bold mb-4 flex items-center gap-2" style={{ color: '#4A3728' }}>
           <Target className="w-5 h-5" style={{ color: '#FFB86C' }} />薄弱知识点
+          <span className="ml-1 text-xs font-normal" style={{ color: '#8B7355' }}>（错题 TOP {weakTopics.length}）</span>
         </h2>
         <div className="space-y-3">
-          {weakPoints.map((point) => (
+          {weakTopics.length === 0 ? (
+            <div className="text-center py-8" style={{ color: '#8B7355' }}>
+              <Sparkles className="w-8 h-8 mx-auto mb-2" style={{ color: '#73C067' }} />
+              <p className="text-sm">太棒了！暂时没有错题，去挑战新知识点吧~</p>
+            </div>
+          ) : weakTopics.map((point) => (
             <div key={point.topic} className="flex items-center gap-3 p-3.5 rounded-2xl"
               style={{ background: 'rgba(255,248,240,0.85)', border: '1px solid rgba(200,230,192,0.4)' }}>
               <span className="text-2xl shrink-0">{point.emoji}</span>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold" style={{ color: '#4A3728' }}>{point.topic}</p>
-                <p className="text-xs mt-0.5" style={{ color: '#8B7355' }}>{point.venue}</p>
+                <p className="text-xs mt-0.5" style={{ color: '#8B7355' }}>{point.venue} · 错 {point.error_count} 次</p>
                 <div className="flex items-center gap-2 mt-1.5">
                   <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(200,230,192,0.4)' }}>
                     <div className="h-full rounded-full"
@@ -369,6 +431,8 @@ function RankingTab() {
 /* ============= Store Tab ============= */
 function StoreTab() {
   const [token, setToken] = useState('');
+  const [user, setUser] = useState<any>(null);
+  const [dashData, setDashData] = useState<any>(null);
   const [items, setItems] = useState<StoreItem[]>([]);
   const [redemptions, setRedemptions] = useState<RedemptionRecord[]>([]);
   const [myPoints, setMyPoints] = useState(0);
@@ -378,14 +442,26 @@ function StoreTab() {
 
   const show = (t: string, c: 'success' | 'error' | 'info' = 'info') => { setMsg({ t, c }); setTimeout(() => setMsg(null), 4000); };
 
-  useEffect(() => { const t = getToken(); if (t) setToken(t); }, []);
+  // 初次加载：拿 token + user + dashboard（积分要用最新的真实数据）
+  useEffect(() => {
+    const t = getToken();
+    const u = getStoredUser();
+    if (t) setToken(t);
+    if (u) {
+      setUser(u);
+      fetchStudentDashboard(u.id).then(d => {
+        setDashData(d);
+        setMyPoints(d?.total_points ?? u?.points ?? 0);
+      }).catch(() => {
+        setMyPoints(u?.points ?? 0);
+      });
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     if (!token) return;
     try {
-      const user = getStoredUser();
-      setMyPoints(user?.points ?? 0);
-      const classId = user?.class_id;
+      const classId = user?.class_id ?? dashData?.student?.class_id;
       if (classId) {
         const r = await listStoreItems(token, classId);
         setItems(r.items || []);
@@ -393,7 +469,7 @@ function StoreTab() {
       const r2 = await myRedemptions(token);
       setRedemptions(r2.redemptions || []);
     } catch (e) { }
-  }, [token]);
+  }, [token, user?.class_id, dashData?.student?.class_id]);
   useEffect(() => { if (token) loadData(); }, [token, loadData]);
 
   const redeem = async (itemId: number, itemName: string, pts: number) => {
@@ -427,7 +503,7 @@ function StoreTab() {
         <Coins className="w-10 h-10" style={{ color: '#FFB86C' }} />
         <div>
           <div className="text-xs" style={{ color: '#8B7355' }}>我的爱心饲料币</div>
-          <div className="text-3xl font-black" style={{ color: '#FFB86C' }}>{myPoints}</div>
+          <div className="text-3xl font-black" style={{ color: '#FFB86C' }}>{Number(myPoints).toFixed(1)}</div>
         </div>
         <button onClick={loadData} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full"
           style={{ border: '1px solid rgba(200,230,192,0.5)', color: '#8B7355', background: 'rgba(255,255,255,0.6)' }}>
@@ -497,7 +573,7 @@ function StoreTab() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-sm font-bold" style={{ color: '#FFB86C' }}>-{r.points}分</span>
+                      <span className="text-sm font-bold" style={{ color: '#FFB86C' }}>-{Number(r.points).toFixed(1)}分</span>
                       <Icon className="w-4 h-4" style={{ color: statusColor(r.status) }} />
                       <span className="text-xs px-2 py-0.5 rounded-full"
                         style={{ backgroundColor: `${statusColor(r.status)}18`, color: statusColor(r.status) }}>{statusLabel(r.status)}</span>

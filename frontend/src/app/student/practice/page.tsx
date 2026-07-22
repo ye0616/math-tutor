@@ -6,9 +6,10 @@ import Link from 'next/link';
 import {
   Check, Lock, Flag, Star, LifeBuoy, CheckCircle, MapPin,
   Trophy, Flame, Crown, Sparkles, ChevronRight, Target, PawPrint,
-  Loader2, RefreshCw, XCircle, Lightbulb, Gamepad2,
+  Loader2, RefreshCw, XCircle, Lightbulb, Gamepad2, Shield, Award,
 } from 'lucide-react';
-import { getStoredUser, fetchStudentDashboard, fetchPracticeQuestions } from '@/lib/api';
+import { getStoredUser, getToken, fetchStudentDashboard, fetchPracticeQuestions, generateChallengeHint } from '@/lib/api';
+import XiaocongDialog from '@/components/XiaocongDialog';
 
 interface VenueInfo {
   id: number;
@@ -19,6 +20,7 @@ interface VenueInfo {
   progress: string;
   accuracy: number;
   total: number;
+  challenge_count: number;
 }
 
 interface QuestionItem {
@@ -37,6 +39,42 @@ const difficulties = [
   { id: 'advanced', icon: Flame, name: '进阶挑战区', desc: '"动物运动会"', color: '#FFB86C' },
   { id: 'extension', icon: Crown, name: '终极竞技场', desc: '"动物王者对决"', color: '#9C7BB8' },
 ];
+
+// #191: 场馆 tag → unit_code 映射（用于 /challenge/answer 上报）
+const TAG_TO_UNIT: Record<string, string> = {
+  '加减法': 'u1',
+  '小数乘法': 'u2',
+  '小数除法': 'u3',
+  '简易方程': 'u4',
+  '多边形面积': 'u5',
+  '可能性': 'u6',
+  '数学广角': 'u7',
+  '总复习': 'u8',
+};
+function mapTagToUnit(tag?: string): string {
+  if (!tag) return 'u1';
+  return TAG_TO_UNIT[tag] || 'u1';
+}
+function mapTagToLesson(tag?: string, kp?: string): string {
+  const u = mapTagToUnit(tag);
+  // 默认 l1，按 knowledge_point 简化映射
+  if (!kp) return `${u}-l1`;
+  const kpMap: Record<string, string> = {
+    '小数乘整数': `${u}-l1`,
+    '小数乘小数': `${u}-l3`,
+    '积的近似数': `${u}-l5`,
+    '除数是整数的小数除法': 'u3-l1',
+    '除数是小数的小数除法': 'u3-l3',
+    '混合运算': 'u3-l5',
+    '用字母表示数': 'u4-l1',
+    '解简易方程': 'u4-l3',
+    '平行四边形面积': 'u5-l1',
+    '三角形面积': 'u5-l3',
+    '梯形面积': 'u5-l5',
+    '可能性': 'u6-l1',
+  };
+  return kpMap[kp] || `${u}-l1`;
+}
 
 function StudentPractice() {
   const searchParams = useSearchParams();
@@ -58,6 +96,12 @@ function StudentPractice() {
   const [answeredCount, setAnsweredCount] = useState(0);
   const [correctCount, setCorrectCount] = useState(0);
   const [finished, setFinished] = useState(false);
+  // #191: 饲养员 AI 提示（真生成，不剧透）
+  const [hintContent, setHintContent] = useState<{ hint: string; thinking_path: string } | null>(null);
+  const [hintLoading, setHintLoading] = useState(false);
+  // #191: 答错弹小聪 dialog
+  const [xiaocongOpen, setXiaocongOpen] = useState(false);
+  const [xiaocongErrorNoteId, setXiaocongErrorNoteId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Load user and dashboard
@@ -130,7 +174,7 @@ function StudentPractice() {
     }
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (answer.trim() === '') return;
     const currentQ = questions[currentQIdx];
     if (!currentQ) return;
@@ -140,6 +184,38 @@ function StudentPractice() {
     setShowAnalysis(true);
     setAnsweredCount((c) => c + 1);
     if (isCorrect) setCorrectCount((c) => c + 1);
+
+    // #191: 答错/答对都上报，让 challenge_count 实时增长（之前只答错才上报 → 答对题数不计数）
+    try {
+      const token = getToken();
+      if (token && selectedVenue) {
+        // 通过 /challenge/answer 上报（answer route 会自动创建/累加 challenge_session）
+        const form = new FormData();
+        form.append('unit_code', mapTagToUnit(selectedVenue.tag));
+        form.append('lesson_code', mapTagToLesson(selectedVenue.tag, currentQ.knowledge_point));
+        form.append('level_index', String(currentQIdx + 1));
+        form.append('question', currentQ.question);
+        form.append('student_answer', answer.trim());
+        form.append('correct_answer', currentQ.correct_answer);
+        form.append('knowledge_point', currentQ.knowledge_point || '');
+        const res = await fetch('/api/challenge/answer', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        }).then(r => r.json()).catch(() => null);
+        // 答错 → 弹小聪 dialog
+        if (!isCorrect && res?.success && res.data?.error_note_id) {
+          setXiaocongErrorNoteId(res.data.error_note_id);
+          setXiaocongOpen(true);
+        }
+        // 答对或答错都刷新 dashboard，让 challenge_count +1 + 正确率实时更新
+        if (res?.success) {
+          await loadDashboard(user.id);
+        }
+      }
+    } catch (e) {
+      console.warn('upload answer failed', e);
+    }
   };
 
   const handleNext = () => {
@@ -158,6 +234,38 @@ function StudentPractice() {
   const handleRestart = () => {
     resetQuiz();
     handleLoadQuestions();
+  };
+
+  // #191: 调 /challenge/hint 生成真 AI 提示
+  const handleAskHint = async () => {
+    const currentQ = questions[currentQIdx];
+    if (!currentQ) return;
+    const token = getToken();
+    if (!token) return;
+    setShowHint(true);
+    setHintLoading(true);
+    setHintContent(null);
+    try {
+      const form = new FormData();
+      form.append('knowledge_point', currentQ.knowledge_point || '');
+      form.append('correct_answer', currentQ.correct_answer);
+      form.append('student_answer', answer || '');
+      form.append('question', currentQ.question);
+      const res: any = await fetch('/api/challenge/hint', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      }).then(r => r.json()).catch(() => null);
+      if (res?.success && res.data) {
+        setHintContent(res.data);
+      } else {
+        setHintContent({ hint: '回想一下这道题的关键步骤，加油！', thinking_path: currentQ.knowledge_point || '' });
+      }
+    } catch {
+      setHintContent({ hint: '饲养员暂时没回应，请再试一次~', thinking_path: currentQ.knowledge_point || '' });
+    } finally {
+      setHintLoading(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -215,6 +323,20 @@ function StudentPractice() {
                   <Star className="w-3.5 h-3.5" />
                   正确率 {selectedVenue.accuracy}%
                 </span>
+                {/* #191: 闯关进度徽标（≥3 解锁下一馆） */}
+                <span
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold text-white"
+                  style={{
+                    background: (selectedVenue.challenge_count || 0) >= 3
+                      ? 'linear-gradient(90deg, #10B981, #059669)'
+                      : 'linear-gradient(90deg, #FFB86C, #FF9F4A)',
+                    boxShadow: '0 2px 8px rgba(255, 184, 108, 0.3)',
+                  }}
+                  title="完成 3 个闯关会话即可解锁下一馆"
+                >
+                  <Award className="w-3.5 h-3.5" />
+                  闯关 {selectedVenue.challenge_count || 0}/3 {(selectedVenue.challenge_count || 0) >= 3 ? '✓' : ''}
+                </span>
               </div>
             </div>
             {questions.length > 0 && (
@@ -249,12 +371,19 @@ function StudentPractice() {
           {venues.map((v) => {
             const isCurrent = selectedVenue?.id === v.id;
             const isLocked = v.status === 'locked';
+            // #191: 闯关进度 + 正确率徽标
+            const challengeCount = v.challenge_count || 0;
+            const challengeRatio = Math.min(challengeCount / 3, 1);
+            const accuracy = v.accuracy || 0;
+            const accuracyColor = accuracy >= 80 ? '#10B981' : accuracy >= 60 ? '#F59E0B' : accuracy > 0 ? '#EF4444' : '#9CA3AF';
+            const accuracyBg = accuracy >= 80 ? 'rgba(16,185,129,0.15)' : accuracy >= 60 ? 'rgba(245,158,11,0.15)' : accuracy > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(156,163,175,0.15)';
+            const challengeProgressColor = challengeCount >= 3 ? '#10B981' : '#FFB86C';
             return (
               <button
                 key={v.id}
                 onClick={() => handleSelectVenue(v)}
                 disabled={isLocked}
-                className="glass-card p-4 text-left transition-all"
+                className="glass-card p-4 text-left transition-all relative overflow-hidden"
                 style={{
                   background: isCurrent
                     ? 'linear-gradient(135deg, rgba(255, 240, 219, 0.95), rgba(255, 184, 108, 0.2))'
@@ -269,6 +398,18 @@ function StudentPractice() {
                   border: isCurrent ? '2px solid #FFB86C' : 'none',
                 }}
               >
+                {/* #191: 右上方正确率徽标 */}
+                {!isLocked && accuracy > 0 && (
+                  <div
+                    className="absolute top-2 right-2 px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1"
+                    style={{ background: accuracyBg, color: accuracyColor }}
+                    title={`累计正确率 ${accuracy}%`}
+                  >
+                    <Star className="w-3 h-3" />
+                    {accuracy}%
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-3xl select-none">{v.emoji}</span>
                   {v.status === 'done' && (
@@ -300,6 +441,29 @@ function StudentPractice() {
                 <p className="text-xs mt-1" style={{ color: v.status === 'current' ? '#FFB86C' : '#8B7355' }}>
                   {isLocked ? '🔒 未解锁' : v.progress}
                 </p>
+
+                {/* #191: 闯关进度（3 个解锁下一馆） */}
+                {!isLocked && (
+                  <div className="mt-2.5">
+                    <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: '#8B7355' }}>
+                      <span className="font-medium">闯关进度</span>
+                      <span className="font-bold" style={{ color: challengeProgressColor }}>
+                        {challengeCount}/3 {challengeCount >= 3 ? '✓ 已解锁' : ''}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(200, 230, 192, 0.3)' }}>
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${challengeRatio * 100}%`,
+                          background: challengeCount >= 3
+                            ? 'linear-gradient(90deg, #10B981, #059669)'
+                            : 'linear-gradient(90deg, #FFB86C, #FF9F4A)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
               </button>
             );
           })}
@@ -504,7 +668,7 @@ function StudentPractice() {
                   </button>
                   <button
                     id="btn-help"
-                    onClick={() => setShowHint(true)}
+                    onClick={handleAskHint}
                     className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl text-sm font-bold text-white transition-all hover:scale-[1.02] active:scale-[0.98]"
                     style={{
                       background: 'linear-gradient(135deg, #FFB86C 0%, #FF9F4A 100%)',
@@ -512,7 +676,7 @@ function StudentPractice() {
                     }}
                   >
                     <LifeBuoy className="w-4 h-4" />
-                    请求饲养员帮助
+                    饲养员 AI 提示（不剧透）
                   </button>
                 </div>
               ) : (
@@ -589,24 +753,41 @@ function StudentPractice() {
               {showHint && !feedback && (
                 <div
                   className="mx-auto max-w-lg rounded-2xl p-5"
-                  style={{ background: 'rgba(255, 240, 219, 0.85)', border: '1px dashed rgba(255, 184, 108, 0.6)' }}
+                  style={{ background: 'rgba(255, 240, 219, 0.95)', border: '1px dashed rgba(255, 184, 108, 0.6)' }}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-bold flex items-center gap-1" style={{ color: '#8B5A1B' }}>
                       <Lightbulb className="w-3.5 h-3.5" />
-                      饲养员的提示
+                      🦊 饲养员的提示
                     </span>
                     <button
-                      onClick={() => setShowHint(false)}
+                      onClick={() => { setShowHint(false); setHintContent(null); }}
                       className="text-sm font-medium underline"
                       style={{ color: '#FFB86C' }}
                     >
                       收起
                     </button>
                   </div>
-                  <p className="text-sm leading-relaxed" style={{ color: '#4A3728' }}>
-                    仔细读题，想一想这道题考的是哪个知识点（{currentQ.knowledge_point}），试试用学过的方法一步步解答吧！
-                  </p>
+                  {hintLoading ? (
+                    <div className="flex items-center gap-2 py-2">
+                      <Loader2 className="w-4 h-4 animate-spin" style={{ color: '#FFB86C' }} />
+                      <span className="text-sm" style={{ color: '#8B5A1B' }}>饲养员正在思考...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm leading-relaxed font-medium" style={{ color: '#4A3728' }}>
+                        💡 {hintContent?.hint || '仔细想想已知条件，一步步来~'}
+                      </p>
+                      {hintContent?.thinking_path && (
+                        <p className="text-xs mt-2 italic" style={{ color: '#8B7355' }}>
+                          思路关键词：{hintContent.thinking_path}
+                        </p>
+                      )}
+                      <p className="text-xs mt-2" style={{ color: '#8B7355' }}>
+                        📌 提示不剧透答案，自己想出来的才是真本事！
+                      </p>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -762,7 +943,35 @@ function StudentPractice() {
           </div>
         </section>
       )}
+
+      {/* #191: 错题触发小聪引导 dialog */}
+      <PracticeXiaocongDialog
+        open={xiaocongOpen}
+        errorNoteId={xiaocongErrorNoteId}
+        onClose={() => {
+          setXiaocongOpen(false);
+          setXiaocongErrorNoteId(null);
+          // 答错后刷新 dashboard，让 challenge_count 实时更新
+          if (user) loadDashboard(user.id);
+        }}
+      />
     </div>
+  );
+}
+
+// #191: 错题触发小聪 dialog（XiaocongDialog 自己渲染固定定位 modal）
+function PracticeXiaocongDialog({
+  open,
+  errorNoteId,
+  onClose,
+}: { open: boolean; errorNoteId: number | null; onClose: () => void }) {
+  if (!open || !errorNoteId) return null;
+  return (
+    <XiaocongDialog
+      open={open}
+      errorNoteId={errorNoteId}
+      onClose={onClose}
+    />
   );
 }
 

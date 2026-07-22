@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import {
   getStoredUser, getToken, uploadHomework, pollGradingTask,
-  getGuidedCorrection, getSimilarQuestions, homeworkHistory,
+  getGuidedCorrection, getSimilarQuestions,
   getPublishedAssignments, PublishedAssignment,
   HomeworkQuestion, GuidedCorrection, SimilarQuestion,
   generateRandomChallenge, getRandomChallengeTask, submitRandomChallenge,
@@ -18,19 +18,7 @@ import {
 } from '@/lib/api';
 import XiaocongDialog from '@/components/XiaocongDialog';
 
-type Stage = 'upload' | 'grading' | 'result' | 'history';
-
-interface SubmissionHistory {
-  id: number;
-  lesson_title: string;
-  image_url: string;
-  status: string;
-  summary: string;
-  total_questions: number;
-  correct_count: number;
-  created_at: string;
-  questions: HomeworkQuestion[];
-}
+type Stage = 'upload' | 'grading' | 'result';
 
 export default function StudentHomework() {
   const [stage, setStage] = useState<Stage>('upload');
@@ -43,8 +31,6 @@ export default function StudentHomework() {
   const [assignments, setAssignments] = useState<PublishedAssignment[]>([]);
   const [gradingMsg, setGradingMsg] = useState('AI正在识别你的作业...');
   const [result, setResult] = useState<any>(null);
-  const [history, setHistory] = useState<SubmissionHistory[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,24 +97,6 @@ export default function StudentHomework() {
     } finally {
       clearInterval(msgTimer);
     }
-  };
-
-  // ===== 加载历史 =====
-  const loadHistory = async () => {
-    if (!token || !user) return;
-    try {
-      const res = await homeworkHistory(token, user.id);
-      setHistory(res?.submissions || []);
-    } catch (e) {
-      console.error('Load history error:', e);
-    }
-  };
-
-  const toggleHistory = () => {
-    if (!showHistory && history.length === 0) {
-      loadHistory();
-    }
-    setShowHistory(!showHistory);
   };
 
   // ===== 重置 =====
@@ -207,14 +175,6 @@ export default function StudentHomework() {
               拍照上传你的作业，AI智能体会逐题批改，错题还会引导你一步步改错。全对了还有"再考考你"挑战哦~
             </p>
           </div>
-          <button
-            onClick={toggleHistory}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all hover:scale-105"
-            style={{ background: 'rgba(255, 255, 255, 0.7)', color: '#8B7355', border: '1.5px solid rgba(200, 230, 192, 0.5)' }}
-          >
-            <History className="w-3.5 h-3.5" />
-            批改记录
-          </button>
         </div>
       </section>
 
@@ -304,72 +264,82 @@ export default function StudentHomework() {
               />
             </div>
 
-            {/* 上传区域 */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={handleFileSelect}
-              className="hidden"
-            />
+            {/* ============= 选中课题且老师已上传题目 → 直接展示作业内容 ============= */}
+            {selectedAssignment && (selectedAssignment.questions?.length ?? 0) > 0 && !previewUrl && (
+              <AssignmentContentCard
+                assignment={selectedAssignment}
+                token={token}
+                userId={user?.id || 0}
+                onReset={handleReset}
+              />
+            )}
 
-            {!previewUrl ? (
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                className="cursor-pointer rounded-2xl border-2 border-dashed p-8 md:p-12 text-center transition-all hover:opacity-80"
-                style={{
-                  borderColor: 'rgba(115, 192, 103, 0.4)',
-                  background: 'rgba(232, 245, 228, 0.5)',
-                }}
-              >
-                <div className="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center"
-                     style={{ background: 'rgba(115, 192, 103, 0.15)' }}>
-                  <Camera className="w-8 h-8" style={{ color: '#5CAF50' }} />
-                </div>
-                <p className="text-sm font-bold mb-1" style={{ color: '#4A3728' }}>
-                  点击拍照或选择作业图片
-                </p>
-                <p className="text-xs" style={{ color: '#8B7355' }}>
-                  支持 JPG / PNG，建议拍清楚每道题目
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="relative rounded-2xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.5)' }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={previewUrl} alt="作业预览" className="w-full max-h-96 object-contain" />
-                  <button
-                    onClick={() => { setSelectedFile(null); setPreviewUrl(''); }}
-                    className="absolute top-3 right-3 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
-                    style={{ background: 'rgba(255,255,255,0.9)', color: '#D04040' }}
+            {/* ============= 老师没上传题目 或 没选课题 → 走拍照上传流程 ============= */}
+            {!(selectedAssignment && (selectedAssignment.questions?.length ?? 0) > 0) && (
+              <>
+                {/* 上传区域 */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+
+                {!previewUrl ? (
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="cursor-pointer rounded-2xl border-2 border-dashed p-8 md:p-12 text-center transition-all hover:opacity-80"
+                    style={{
+                      borderColor: 'rgba(115, 192, 103, 0.4)',
+                      background: 'rgba(232, 245, 228, 0.5)',
+                    }}
                   >
-                    重新选择
-                  </button>
-                </div>
-                {error && (
-                  <p className="text-sm text-red-500">{error}</p>
+                    <div className="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center"
+                         style={{ background: 'rgba(115, 192, 103, 0.15)' }}>
+                      <Camera className="w-8 h-8" style={{ color: '#5CAF50' }} />
+                    </div>
+                    <p className="text-sm font-bold mb-1" style={{ color: '#4A3728' }}>
+                      点击拍照或选择作业图片
+                    </p>
+                    <p className="text-xs" style={{ color: '#8B7355' }}>
+                      支持 JPG / PNG，建议拍清楚每道题目
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="relative rounded-2xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.5)' }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={previewUrl} alt="作业预览" className="w-full max-h-96 object-contain" />
+                      <button
+                        onClick={() => { setSelectedFile(null); setPreviewUrl(''); }}
+                        className="absolute top-3 right-3 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
+                        style={{ background: 'rgba(255,255,255,0.9)', color: '#D04040' }}
+                      >
+                        重新选择
+                      </button>
+                    </div>
+                    {error && (
+                      <p className="text-sm text-red-500">{error}</p>
+                    )}
+                    <button
+                      onClick={handleUpload}
+                      disabled={!selectedFile || !token}
+                      className="w-full py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
+                      style={{
+                        background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)',
+                        boxShadow: '0 6px 20px rgba(115, 192, 103, 0.35)',
+                      }}
+                    >
+                      <Sparkles className="w-4 h-4 inline mr-1.5" />
+                      开始AI批改
+                    </button>
+                  </div>
                 )}
-                <button
-                  onClick={handleUpload}
-                  disabled={!selectedFile || !token}
-                  className="w-full py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
-                  style={{
-                    background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)',
-                    boxShadow: '0 6px 20px rgba(115, 192, 103, 0.35)',
-                  }}
-                >
-                  <Sparkles className="w-4 h-4 inline mr-1.5" />
-                  开始AI批改
-                </button>
-              </div>
+              </>
             )}
           </section>
-
-          {/* 历史记录 */}
-          {showHistory && (
-            <HistoryPanel history={history} onRefresh={loadHistory} />
-          )}
         </>
       )}
 
@@ -387,6 +357,151 @@ export default function StudentHomework() {
       {/* ============= 学习问答区域 ============= */}
       {token && (
         <StudyQA token={token} userId={user?.id || 0} classId={user?.class_id || 0} />
+      )}
+    </div>
+  );
+}
+
+// ============= 作业内容卡片（老师已上传题目时展示） =============
+function AssignmentContentCard({
+  assignment, token, userId, onReset,
+}: {
+  assignment: PublishedAssignment; token: string; userId: number; onReset: () => void;
+}) {
+  const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [submitResult, setSubmitResult] = useState<any>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const questions = assignment.questions || [];
+  const allAnswered = questions.length > 0 && questions.every((q, idx) => (userAnswers[idx] || '').trim().length > 0);
+
+  const handleSubmit = async () => {
+    if (!allAnswered || !token) return;
+    setSubmitting(true);
+    setErrorMsg('');
+    try {
+      const answersPayload = questions.map((q, idx) => ({
+        index: q.index ?? idx + 1,
+        question_text: q.question_text,
+        student_answer: userAnswers[idx] || '',
+        correct_answer: q.correct_answer || '',
+      }));
+      // 直接走 fetch（assignment-submit 还没封到 api.ts）
+      const res = await fetch('/api/homework/assignment-submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          assignment_id: assignment.id,
+          answers: answersPayload,
+        }),
+      }).then(r => r.json());
+      if (res?.success || res?.submission_id) {
+        setSubmitResult(res);
+        setSubmitted(true);
+      } else {
+        setErrorMsg(res?.detail || res?.message || '提交失败');
+      }
+    } catch (e: any) {
+      setErrorMsg(e.message || '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted && submitResult) {
+    const correct = submitResult.correct_count ?? 0;
+    const total = submitResult.total_questions ?? questions.length;
+    const accuracy = submitResult.accuracy ?? (total > 0 ? Math.round((correct / total) * 100) : 0);
+    return (
+      <div className="rounded-2xl p-6 text-center mt-4"
+           style={{ background: 'linear-gradient(135deg, rgba(232,245,228,0.92), rgba(200,230,192,0.6))', border: '2px solid rgba(115,192,103,0.4)' }}>
+        <div className="text-5xl mb-2">{accuracy === 100 ? '🏆' : accuracy >= 80 ? '🎉' : accuracy >= 60 ? '👍' : '💪'}</div>
+        <h3 className="text-xl font-black mb-1" style={{ color: '#2D5A27' }}>提交成功！{correct}/{total} 正确</h3>
+        <p className="text-sm mb-4" style={{ color: '#5C7A57' }}>正确率 {accuracy}%</p>
+        {accuracy === 100 ? (
+          <p className="text-sm mb-4" style={{ color: '#FF9F40' }}>🌟 全部正确！要不要试试"再考考你"挑战？</p>
+        ) : (
+          <p className="text-sm mb-4" style={{ color: '#5C7A57' }}>错题已加入"我的错题"，可以开始救助啦~</p>
+        )}
+        <button onClick={onReset}
+                className="px-6 py-2.5 rounded-xl text-sm font-bold text-white"
+                style={{ background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)' }}>
+          完成
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 mt-4">
+      <div className="rounded-2xl p-5"
+           style={{ background: 'rgba(232,245,228,0.5)', border: '1px solid rgba(115,192,103,0.3)' }}>
+        <h3 className="text-lg font-bold mb-2 flex items-center gap-2" style={{ color: '#2D5A27' }}>
+          <BookOpen className="w-5 h-5" style={{ color: '#5CAF50' }} />
+          {assignment.title}
+        </h3>
+        {assignment.description && (
+          <p className="text-xs mb-2" style={{ color: '#5C7A57' }}>{assignment.description}</p>
+        )}
+        <div className="flex items-center gap-3 text-xs flex-wrap" style={{ color: '#5C7A57' }}>
+          <span>共 {questions.length} 题</span>
+          {assignment.due_date && <span style={{ color: '#FF9F4A' }}>· 截止 {assignment.due_date.slice(0, 10)}</span>}
+          {assignment.submitted && (
+            <span className="px-2 py-0.5 rounded-full" style={{ background: 'rgba(115,192,103,0.2)', color: '#2D5A27' }}>
+              已提交 · {assignment.correct_count}/{assignment.total_questions} 对
+            </span>
+          )}
+        </div>
+      </div>
+
+      {questions.map((q, idx) => (
+        <div key={idx} className="rounded-2xl p-5"
+             style={{ background: 'rgba(255,255,255,0.85)', border: '1.5px solid rgba(200,230,192,0.4)' }}>
+          <div className="flex items-start gap-2 mb-3">
+            <span className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-black text-white"
+                  style={{ background: '#5CAF50' }}>{idx + 1}</span>
+            <p className="text-sm leading-relaxed flex-1" style={{ color: '#3D3D3D', whiteSpace: 'pre-wrap' }}>
+              {q.question_text}
+            </p>
+          </div>
+          {q.knowledge_point && (
+            <p className="text-xs mb-2 px-1" style={{ color: '#8B7355' }}>
+              📌 {q.knowledge_point}
+            </p>
+          )}
+          <textarea
+            value={userAnswers[idx] || ''}
+            onChange={e => setUserAnswers(prev => ({ ...prev, [idx]: e.target.value }))}
+            placeholder="在此输入你的答案..."
+            rows={2}
+            disabled={assignment.submitted}
+            className="w-full px-3 py-2 rounded-xl text-sm outline-none transition-all resize-y"
+            style={{
+              background: 'rgba(255,255,255,0.9)',
+              border: '1.5px solid rgba(200,230,192,0.5)',
+              color: '#3D3D3D',
+              minHeight: '60px',
+            }}
+          />
+        </div>
+      ))}
+
+      {errorMsg && <p className="text-sm text-red-500 text-center">{errorMsg}</p>}
+
+      {!assignment.submitted && (
+        <button
+          onClick={handleSubmit}
+          disabled={!allAnswered || submitting}
+          className="w-full py-3 rounded-xl text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50"
+          style={{
+            background: 'linear-gradient(135deg, #73C067 0%, #5CAF50 100%)',
+            boxShadow: '0 6px 20px rgba(115, 192, 103, 0.35)',
+          }}
+        >
+          {submitting ? <><Loader2 className="w-4 h-4 inline mr-1.5 animate-spin" />提交中...</> : <><Sparkles className="w-4 h-4 inline mr-1.5" />提交作业（{Object.keys(userAnswers).filter(k => (userAnswers[+k] || '').trim()).length}/{questions.length}）</>}
+        </button>
       )}
     </div>
   );
@@ -844,61 +959,6 @@ function SimilarQuestionCard({ question, index }: { question: SimilarQuestion; i
         </div>
       )}
     </div>
-  );
-}
-
-// ============= 历史记录面板 =============
-function HistoryPanel({ history, onRefresh }: { history: SubmissionHistory[]; onRefresh: () => void }) {
-  return (
-    <section className="glass-card-solid p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold flex items-center gap-2" style={{ color: '#4A3728' }}>
-          <History className="w-5 h-5" style={{ color: '#5CAF50' }} />
-          批改记录
-        </h2>
-        <button
-          onClick={onRefresh}
-          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium transition-all"
-          style={{ background: 'rgba(255, 255, 255, 0.7)', color: '#8B7355', border: '1px solid rgba(200, 230, 192, 0.5)' }}
-        >
-          <RefreshCw className="w-3 h-3" />
-          刷新
-        </button>
-      </div>
-      {history.length === 0 ? (
-        <p className="text-center text-sm py-8" style={{ color: '#8B7355' }}>
-          暂无批改记录
-        </p>
-      ) : (
-        <div className="space-y-3">
-          {history.map(sub => (
-            <div key={sub.id} className="rounded-xl p-4" style={{ background: 'rgba(232, 245, 228, 0.5)' }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-bold" style={{ color: '#4A3728' }}>
-                  {sub.lesson_title || '数学作业'}
-                </span>
-                <span className="text-xs" style={{ color: '#8B7355' }}>
-                  {sub.created_at?.split(' ')[0] || ''}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 text-sm">
-                <span style={{ color: '#2D5A27' }}>
-                  <CheckCircle className="w-3.5 h-3.5 inline mr-1" />
-                  {sub.correct_count}/{sub.total_questions}正确
-                </span>
-                {sub.image_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={sub.image_url} alt="作业" className="w-12 h-12 rounded-lg object-cover" />
-                )}
-              </div>
-              {sub.summary && (
-                <p className="text-xs mt-2" style={{ color: '#8B7355' }}>{sub.summary}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
 

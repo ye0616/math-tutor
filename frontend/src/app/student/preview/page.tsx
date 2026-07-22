@@ -123,9 +123,10 @@ export default function StudentPreview() {
   const [errorMsg, setErrorMsg] = useState('');
   const [showRefs, setShowRefs] = useState<Record<string, boolean>>({});
 
-  // 视频观看状态
+  // 视频观看状态（setInterval 假计时）
   const [activeVideoLayer, setActiveVideoLayer] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, number>>({});
+  // 每层视频的 setInterval handle（用于按层停止 / 重启）
   const intervalRef = useRef<Record<string, NodeJS.Timeout>>({});
 
   useEffect(() => {
@@ -221,69 +222,71 @@ export default function StudentPreview() {
     return selectedTask.watch_status?.[layer]?.completed === true;
   };
 
+  // ===== 视频记时（setInterval 假计时，与 B 站 iframe 配套）=====
+
+  // 开始/暂停计时：每 1 秒把进度+1%
   const handleStartWatch = (layer: string, video: LayerVideo) => {
     if (!user || !selectedTask) return;
-
-    // 如果已经在计时，则停止
+    const dur = video.duration || 60; // 兜底 60s
     if (activeVideoLayer === layer) {
+      // 暂停：清掉 interval，进度保持当前值
       clearInterval(intervalRef.current[layer]);
+      delete intervalRef.current[layer];
       setActiveVideoLayer(null);
       return;
     }
-
-    // 停止其他层的计时
-    Object.keys(intervalRef.current).forEach(k => clearInterval(intervalRef.current[k]));
+    // 切到播放
+    if (activeVideoLayer && intervalRef.current[activeVideoLayer]) {
+      clearInterval(intervalRef.current[activeVideoLayer]);
+      delete intervalRef.current[activeVideoLayer];
+    }
     setActiveVideoLayer(layer);
-
-    const duration = video.duration || 180;
-    const currentProgress = progress[layer] || 0;
-    const increment = 100 / duration; // 每秒+1/duration%
-
+    const started = (progress[layer] || 0);
     intervalRef.current[layer] = setInterval(() => {
-      setProgress(prev => {
-        const cur = prev[layer] || currentProgress;
-        const next = Math.min(cur + increment, 100);
-
+      setProgress((prev) => {
+        const cur = prev[layer] || started;
+        const next = Math.min(100, cur + (100 / dur));
         if (next >= 100) {
           clearInterval(intervalRef.current[layer]);
-          setActiveVideoLayer(null);
-          // 保存观看完成
-          submitWatchLog(user.id, selectedTask.id, layer, duration, duration, true).catch(console.error);
-          // 更新本地状态
-          setSelectedTask(t => {
-            if (!t) return t;
-            return {
-              ...t,
-              watch_status: {
-                ...t.watch_status,
-                [layer]: { completed: true, watch_duration: duration, total_duration: duration },
-              },
-            };
-          });
-        } else if (Math.floor(next) % 10 === 0) {
-          // 每10%保存一次进度
-          submitWatchLog(user.id, selectedTask.id, layer, Math.floor(duration * next / 100), duration, false).catch(console.error);
+          delete intervalRef.current[layer];
+          setActiveVideoLayer((curActive) => (curActive === layer ? null : curActive));
+          if (user && selectedTask) {
+            submitWatchLog(user.id, selectedTask.id, layer, Math.floor(dur), Math.floor(dur), true).catch(console.error);
+            setSelectedTask((t) => {
+              if (!t) return t;
+              return {
+                ...t,
+                watch_status: {
+                  ...t.watch_status,
+                  [layer]: { completed: true, watch_duration: Math.floor(dur), total_duration: Math.floor(dur) },
+                },
+              };
+            });
+          }
         }
-
         return { ...prev, [layer]: next };
       });
     }, 1000);
   };
 
-  const handleManualComplete = (layer: string, video: LayerVideo) => {
+  // 手动标记完成（兜底）
+  const handleManualComplete = (layer: string, video: LayerVideo | { duration?: number }) => {
     if (!user || !selectedTask) return;
-    const duration = video.duration || 180;
-    clearInterval(intervalRef.current[layer]);
+    const dur = video.duration || 0;
+    if (intervalRef.current[layer]) {
+      clearInterval(intervalRef.current[layer]);
+      delete intervalRef.current[layer];
+    }
     setActiveVideoLayer(null);
-    setProgress(prev => ({ ...prev, [layer]: 100 }));
-    submitWatchLog(user.id, selectedTask.id, layer, duration, duration, true).catch(console.error);
-    setSelectedTask(t => {
+    setProgress((prev) => ({ ...prev, [layer]: 100 }));
+    submitWatchLog(user.id, selectedTask.id, layer, Math.floor(dur), Math.floor(dur), true).catch(console.error);
+    setSelectedTask((t) => {
       if (!t) return t;
       return {
         ...t,
         watch_status: {
           ...t.watch_status,
-          [layer]: { completed: true, watch_duration: duration, total_duration: duration },
+          [layer]: { completed: true, watch_duration: Math.floor(dur), total_duration: Math.floor(dur) },
         },
       };
     });
@@ -551,7 +554,7 @@ export default function StudentPreview() {
                 )}
               </div>
 
-              {/* 视频播放器 */}
+              {/* 视频播放器 - B 站 iframe 嵌入 + setInterval 假计时 */}
               <div className="rounded-2xl overflow-hidden" style={{ background: '#1a1a2e' }}>
                 <div className="relative aspect-video">
                   <iframe
@@ -581,7 +584,7 @@ export default function StudentPreview() {
                       </span>
                     ) : (
                       <button
-                        onClick={() => handleStartWatch(layerKey, video as unknown as LayerVideo)}
+                        onClick={() => handleStartWatch(layerKey, video)}
                         className="text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 shrink-0 ml-3 transition-all hover:scale-105"
                         style={{ background: activeVideoLayer === layerKey ? `${vColor}40` : `${vColor}20`, color: vColor, border: `1px solid ${vColor}60` }}
                       >
@@ -605,7 +608,7 @@ export default function StudentPreview() {
                     </span>
                     {!watched && prog >= 50 && (
                       <button
-                        onClick={() => handleManualComplete(layerKey, video as unknown as LayerVideo)}
+                        onClick={() => handleManualComplete(layerKey, video)}
                         className="text-xs px-2 py-1 rounded-full flex items-center gap-1 shrink-0 transition-all hover:scale-105"
                         style={{ background: 'rgba(115, 192, 103, 0.3)', color: '#73C067', border: '1px solid rgba(115, 192, 103, 0.5)' }}
                       >
@@ -841,10 +844,9 @@ export default function StudentPreview() {
               ) : null}
             </div>
 
-            {/* 视频播放器 - 真实B站嵌入 */}
+            {/* 视频播放器 - B 站 iframe 嵌入 + setInterval 假计时 */}
             {video && (
               <div className="mb-4 rounded-2xl overflow-hidden" style={{ background: '#1a1a2e' }}>
-                {/* B站视频iframe嵌入 */}
                 <div className="relative aspect-video">
                   <iframe
                     src={video.embed_url || `https://player.bilibili.com/player.html?bvid=${video.bvid}&page=${video.page || 1}&high_quality=1&danmaku=0&autoplay=0`}

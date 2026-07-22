@@ -12,6 +12,7 @@ const navItems = [
   { href: '/student/homework', label: '学习作业' },
   { href: '/student/practice', label: '闯关游戏' },
   { href: '/student/errors', label: '错题救助站' },
+  { href: '/student/xiaocong-history', label: '小聪记录' },
   { href: '/student/knowledge-graph', label: '知识图谱' },
   { href: '/student/achievements', label: '成长手册' },
 ];
@@ -35,14 +36,22 @@ export default function StudentLayout({
 }) {
   const pathname = usePathname();
   const sceneClass = getSceneClass(pathname);
+  // 避免 SSR/CSR hydration mismatch：先以服务端一致的占位渲染，mounted 后再读 localStorage 替换
+  const [mounted, setMounted] = useState(false);
   const [userInfo, setUserInfo] = useState<any>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => {
-    setUserInfo(getStoredUser());
+    try { setUserInfo(getStoredUser()); } catch { /* noop */ }
+    setMounted(true);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'math-tutor-user') setUserInfo(getStoredUser());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const userName = userInfo?.name || '小饲养员';
+  const userName = mounted && userInfo?.name ? userInfo.name : '小饲养员';
   const avatarText = (userName || '?')[0];
   const userPoints = userInfo?.points ?? 0;
 
@@ -94,7 +103,15 @@ export default function StudentLayout({
           <div className="flex items-center gap-3">
             <span className="text-sm font-semibold" style={{ color: '#4A3728' }}>{userName}</span>
             <button
-              onClick={() => setProfileOpen(true)}
+              onClick={() => {
+                // 若 localStorage 已有 user 但 userInfo state 还没同步，强行从 storage 同步一次
+                if (!userInfo) {
+                  const u = getStoredUser();
+                  if (u) setUserInfo(u);
+                  else { window.location.href = '/'; return; }
+                }
+                setProfileOpen(true);
+              }}
               className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition-all hover:scale-110 cursor-pointer"
               style={{
                 background: 'linear-gradient(135deg, #E8F5E4, #C8E6C0)',
