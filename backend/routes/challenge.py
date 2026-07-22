@@ -5,7 +5,7 @@ v2: 统一使用 curriculum.py 的 KNOWLEDGE_TREE，符合人教版五上完整�
 import json
 import uuid
 import threading
-from fastapi import APIRouter, HTTPException, Form
+from fastapi import APIRouter, HTTPException, Form, Header
 from database import get_db, add_points, get_daily_points_by_reason_prefix
 from auth import get_user_from_token
 from curriculum import KNOWLEDGE_TREE, get_all_knowledge_points
@@ -15,6 +15,7 @@ from agents.llm import (
     ai_analyze_error_knowledge,
     ai_generate_similar_questions,
     ai_guided_correction,
+    ai_generate_hint,
 )
 
 router = APIRouter()
@@ -92,7 +93,7 @@ def get_curriculum():
 def start_challenge(
     unit_code: str = Form(...),
     lesson_code: str = Form(...),
-    authorization: str = Form(""),
+    authorization: str = Header(None),
 ):
     """开始闯关 - AI基于知识树生成闯关题目"""
     student_id = get_student_id(authorization)
@@ -170,6 +171,15 @@ def get_challenge_task(task_id: str):
         return {"success": True, "status": "generating"}
 
 
+def _get_session_id_for_challenge(student_id: int, unit_code: str, lesson_code: str, db) -> int | None:
+    """查找学生当前 unit+lesson 的最新 active challenge_sessions.session_id"""
+    row = db.execute(
+        "SELECT id FROM challenge_sessions WHERE student_id=? AND unit_code=? AND lesson_code=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+        (student_id, unit_code, lesson_code),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 @router.post("/answer")
 def submit_challenge_answer(
     lesson_code: str = Form(...),
@@ -178,10 +188,23 @@ def submit_challenge_answer(
     student_answer: str = Form(...),
     correct_answer: str = Form(...),
     knowledge_point: str = Form(""),
-    authorization: str = Form(""),
+    unit_code: str = Form(""),  # #191 修复：允许前端直传 unit_code（venue_to_unit 错位）
+    authorization: str = Header(None),
 ):
     """闯关答题 - 学生提交答案，AI判断正误+反馈"""
     student_id = get_student_id(authorization)
+
+    # #191 修复：优先使用前端传的 unit_code，回退到 lesson_code 反查
+    # 原因：practice 页 venue_to_unit 映射与人教版 KNOWLEDGE_TREE 不一致（整数加减馆→u1 观察组合体），
+    # lesson_code 反查会让「加减法」题被归到「观察组合体」单元，导致 challenge_count 永远不增长
+    if unit_code and unit_code in KNOWLEDGE_TREE:
+        pass  # 前端传的 unit_code 合法就用它
+    else:
+        unit_code = ""
+        for uc, ud in KNOWLEDGE_TREE.items():
+            if lesson_code in ud["lessons"]:
+                unit_code = uc
+                break
 
     # 简单判断正误（数值型可以精确比对）
     is_correct = False
@@ -192,8 +215,36 @@ def submit_challenge_answer(
     except:
         is_correct = student_answer.strip() == correct_answer.strip()
 
+    error_note_id = None
+    session_id = None
+
     # 积分：闯关 +0.1，每日累计最多 +1
     with get_db() as db:
+        # #191 修复：practice 页答题每次调用都「关掉上一 active + 开新 active」
+        # 目的：让每答一题 = 1 个新 session = challenge_count +1
+        # 3 题后 = 3 sessions → 自动解锁下一馆（_compute_venue_progress 的 _is_unlocked 判定）
+        if unit_code:
+            # 先关掉该 unit 下所有 active session（用同一个 lesson_code 简化）
+            db.execute(
+                "UPDATE challenge_sessions SET status='completed', completed_at=CURRENT_TIMESTAMP "
+                "WHERE student_id=? AND unit_code=? AND status='active'",
+                (student_id, unit_code),
+            )
+            # 新开一个 active session
+            cursor = db.execute(
+                "INSERT INTO challenge_sessions (student_id, unit_code, lesson_code, theme, theme_intro, questions_json, status, total_correct, total_questions) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'active', 0, 1)",
+                (student_id, unit_code, lesson_code, "练习馆", "学生练习馆答题", "[]"),
+            )
+            session_id = cursor.lastrowid
+
+        # 写入 challenge_answers 明细（用于正确率统计）
+        if session_id:
+            db.execute(
+                "INSERT INTO challenge_answers (session_id, student_id, level_index, question_text, student_answer, correct_answer, is_correct, knowledge_point) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session_id, student_id, level_index, question, student_answer, correct_answer, 1 if is_correct else 0, knowledge_point),
+            )
+
         daily_earned = get_daily_points_by_reason_prefix(db, student_id, "闯关")
         points = 0.0
         if daily_earned < 1.0:
@@ -203,15 +254,25 @@ def submit_challenge_answer(
 
         # 错题入错题本
         if not is_correct:
-            db.execute(
+            cursor = db.execute(
                 "INSERT INTO error_notes (student_id, question_id, question_text, student_answer, correct_answer, knowledge_point, source, status) VALUES (?, NULL, ?, ?, ?, ?, 'challenge', 'unresolved')",
                 (student_id, question, student_answer, correct_answer, knowledge_point),
+            )
+            error_note_id = cursor.lastrowid
+
+        # 更新 session 累计正确数
+        if session_id:
+            db.execute(
+                "UPDATE challenge_sessions SET total_correct = (SELECT COUNT(*) FROM challenge_answers WHERE session_id=? AND is_correct=1) WHERE id=?",
+                (session_id, session_id),
             )
 
     result = {
         "is_correct": is_correct,
         "points_earned": points,
         "correct_answer": correct_answer,
+        "error_note_id": error_note_id,
+        "session_id": session_id,
     }
 
     if not is_correct:
@@ -231,7 +292,7 @@ def submit_similar_answer(
     student_answer: str = Form(...),
     correct_answer: str = Form(...),
     knowledge_point: str = Form(""),
-    authorization: str = Form(""),
+    authorization: str = Header(None),
 ):
     """闯关巩固题答题"""
     student_id = get_student_id(authorization)
@@ -244,7 +305,6 @@ def submit_similar_answer(
     except:
         is_correct = student_answer.strip() == correct_answer.strip()
 
-    # 积分：闯关巩固 +0.1，每日累计最多 +1
     with get_db() as db:
         daily_earned = get_daily_points_by_reason_prefix(db, student_id, "闯关")
         points = 0.0
@@ -260,6 +320,115 @@ def submit_similar_answer(
             )
 
     return {"success": True, "data": {"is_correct": is_correct, "points_earned": points, "correct_answer": correct_answer}}
+
+
+@router.post("/hint")
+def challenge_hint(
+    question: str = Form(...),
+    correct_answer: str = Form(...),
+    knowledge_point: str = Form(""),
+    student_answer: str = Form(""),
+    authorization: str = Header(None),
+):
+    """闯关饲养员提示 - AI 基于题目+正确答案（+学生错答）生成引导提示"""
+    student_id = get_student_id(authorization)
+    hint = ai_generate_hint(question, correct_answer, knowledge_point, student_answer)
+    return {"success": True, "data": hint}
+
+
+@router.get("/lesson-stats/{lesson_code}")
+def lesson_stats(lesson_code: str, authorization: str = Header(None)):
+    """关卡正确率 - 学生在该课时下的累计正确率（用于选题卡片右上角徽标）"""
+    student_id = get_student_id(authorization)
+    with get_db() as db:
+        row = db.execute(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN ca.is_correct=1 THEN 1 ELSE 0 END) AS correct "
+            "FROM challenge_answers ca "
+            "JOIN challenge_sessions cs ON ca.session_id=cs.id "
+            "WHERE ca.student_id=? AND cs.lesson_code=?",
+            (student_id, lesson_code),
+        ).fetchone()
+        total = row["total"] or 0
+        correct = row["correct"] or 0
+        accuracy = round(correct / total * 100, 1) if total > 0 else 0
+        return {
+            "success": True,
+            "data": {
+                "lesson_code": lesson_code,
+                "total": total,
+                "correct": correct,
+                "accuracy": accuracy,
+            }
+        }
+
+
+@router.post("/complete")
+def complete_challenge_session(
+    session_id: int = Form(...),
+    authorization: str = Header(None),
+):
+    """完成闯关 session - 标记 status='completed'，触发场馆解锁检查"""
+    student_id = get_student_id(authorization)
+    with get_db() as db:
+        sess = db.execute(
+            "SELECT * FROM challenge_sessions WHERE id=? AND student_id=?",
+            (session_id, student_id),
+        ).fetchone()
+        if not sess:
+            raise HTTPException(404, "闯关记录不存在")
+        if sess["status"] == "completed":
+            # 已完成时也返回 count + unlock 信息（前端完成页可能再次刷新）
+            unit_code = sess["unit_code"]
+            completed_count = db.execute(
+                "SELECT COUNT(*) AS cnt FROM challenge_sessions WHERE student_id=? AND unit_code=? AND status='completed'",
+                (student_id, unit_code),
+            ).fetchone()["cnt"]
+            unit_codes = list(KNOWLEDGE_TREE.keys())
+            cur_idx = unit_codes.index(unit_code) if unit_code in unit_codes else -1
+            next_unit_code = unit_codes[cur_idx + 1] if 0 <= cur_idx < len(unit_codes) - 1 else None
+            venue_unlocked_next = completed_count >= 3 and next_unit_code is not None
+            return {
+                "success": True,
+                "data": {
+                    "already_completed": True,
+                    "unit_code": unit_code,
+                    "completed_count": completed_count,
+                    "next_unit_code": next_unit_code,
+                    "venue_unlocked_next": venue_unlocked_next,
+                },
+            }
+
+        db.execute(
+            "UPDATE challenge_sessions SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (session_id,),
+        )
+
+        # 检查馆解锁：该 unit_code 下已完成闯关次数
+        unit_code = sess["unit_code"]
+        completed_count = db.execute(
+            "SELECT COUNT(*) AS cnt FROM challenge_sessions WHERE student_id=? AND unit_code=? AND status='completed'",
+            (student_id, unit_code),
+        ).fetchone()["cnt"]
+
+        # 找到当前 unit 在 KNOWLEDGE_TREE 中的索引，下一馆为 next_unit_code
+        unit_codes = list(KNOWLEDGE_TREE.keys())
+        cur_idx = unit_codes.index(unit_code) if unit_code in unit_codes else -1
+        next_unit_code = unit_codes[cur_idx + 1] if cur_idx >= 0 and cur_idx < len(unit_codes) - 1 else None
+
+        venue_unlocked_next = False
+        if completed_count >= 3 and next_unit_code:
+            venue_unlocked_next = True
+
+        return {
+            "success": True,
+            "data": {
+                "already_completed": False,
+                "unit_code": unit_code,
+                "completed_count": completed_count,
+                "next_unit_code": next_unit_code,
+                "venue_unlocked_next": venue_unlocked_next,
+            }
+        }
 
 
 @router.get("/history/{student_id}")

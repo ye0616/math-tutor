@@ -1,10 +1,11 @@
 """学生端路由"""
 
-from fastapi import APIRouter, Form, HTTPException, Header
+from fastapi import APIRouter, Body, Form, HTTPException, Header
 from database import get_db, add_points
 from auth import get_user_from_token
 from agents.learn import LearnAgent
-from agents.llm import ai_generate_exercises_v2, ai_generate_courseware, ai_recognize_student_error_image, ai_generate_expansion_questions
+from agents.llm import ai_generate_exercises_v2, ai_generate_courseware, ai_recognize_student_error_image, ai_generate_expansion_questions, ai_guided_correction, ai_generate_similar_questions
+from agents.xiaocong import chat_with_xiaocong, reset_xiaocong_session, get_session_round, list_student_sessions, load_session_from_db, delete_session as xiaocong_delete_session
 import json
 import base64
 import os
@@ -288,7 +289,25 @@ def _build_daily_tasks(db, student_id: int, class_id: int | None, today_str: str
 
 
 def _compute_venue_progress(student_id: int, db):
-    """根据答题数据计算场馆解锁进度"""
+    """根据答题数据计算场馆解锁进度
+
+    解锁条件（任一即可解锁下一馆）：
+    - 上一馆 correct >= 5（基于 preview_answers）
+    - 上一馆对应 unit_code 的 challenge_sessions completed >= 3
+    """
+    from curriculum import KNOWLEDGE_TREE
+
+    # venue 与 unit_code 的映射（与 _compute_venue_progress 内的 venue_map 顺序对齐）
+    venue_to_unit = [
+        "u1",  # 整数加减馆 → 第一单元 观察组合体（用 u1-l1/l2/l3 对应）
+        "u2",  # 小数乘法馆 → 第二单元
+        "u3",  # 小数除法馆 → 第三单元
+        "u4",  # 简易方程馆 → 暂映射 u4 图形的运动
+        "u5",  # 多边形面积馆 → u5 用字母表示数
+        "u6",  # 可能性馆 → u6 多边形的面积
+        "u7",  # 数学广角馆 → u7 可能性
+        "u8",  # 总复习馆 → u8 植树问题
+    ]
     venue_map = [
         {"id": 1, "emoji": "🦁", "name": "整数加减馆", "tag": "加减法"},
         {"id": 2, "emoji": "🐘", "name": "小数乘法馆", "tag": "小数乘法"},
@@ -323,18 +342,57 @@ def _compute_venue_progress(student_id: int, db):
         if a["is_correct"]:
             correct_per_venue[venue_idx] += 1
 
+    # #191 修复：每馆对应 unit 的挑战闯关 session 总数（不限 status）
+    # 之前只算 status='completed'，但 practice 页答题只创建 active session，永远不 complete → 永远 0
+    challenge_sessions_per_unit = {}
+    rows = db.execute(
+        "SELECT unit_code, COUNT(*) AS cnt FROM challenge_sessions "
+        "WHERE student_id=? GROUP BY unit_code",
+        (student_id,),
+    ).fetchall()
+    for r in rows:
+        # unit_code -> venue_idx
+        uc = r["unit_code"]
+        if uc in venue_to_unit:
+            venue_idx = venue_to_unit.index(uc)
+            challenge_sessions_per_unit[venue_idx] = r["cnt"]
+
+    # #191 修复：再统计完成数（用于解锁判断 3 sessions 阈值）
+    challenge_completed_per_unit = {}
+    rows2 = db.execute(
+        "SELECT unit_code, COUNT(*) AS cnt FROM challenge_sessions "
+        "WHERE student_id=? AND status='completed' GROUP BY unit_code",
+        (student_id,),
+    ).fetchall()
+    for r in rows2:
+        uc = r["unit_code"]
+        if uc in venue_to_unit:
+            venue_idx = venue_to_unit.index(uc)
+            challenge_completed_per_unit[venue_idx] = r["cnt"]
+
+    def _is_unlocked(i):
+        """该馆是否解锁：上一馆 preview correct>=5 或 上一馆闯关 sessions>=3"""
+        if i == 0:
+            return True
+        prev_correct = correct_per_venue.get(i - 1, 0)
+        prev_challenge = challenge_sessions_per_unit.get(i - 1, 0)
+        return prev_correct >= 5 or prev_challenge >= 3
+
     result = []
     for i, v in enumerate(venue_map):
         answered = answered_per_venue.get(i, 0)
         correct = correct_per_venue.get(i, 0)
         total = total_per_venue
+        unlocked = _is_unlocked(i)
 
-        if i == 0:
-            status = "current" if correct < 5 else "done"
-        elif correct_per_venue.get(i - 1, 0) >= 5 or status_prev_done(result, i - 1):
-            status = "current" if correct < 5 else "done"
-        else:
+        # 状态：locked / current / done
+        # done 仍要求 completed >= 3（确保真正通关）
+        if not unlocked:
             status = "locked"
+        elif challenge_completed_per_unit.get(i, 0) >= 3 or correct >= 5:
+            status = "done"
+        else:
+            status = "current"
 
         result.append({
             **v,
@@ -342,9 +400,10 @@ def _compute_venue_progress(student_id: int, db):
             "progress": f"{correct}/{total}",
             "accuracy": round(correct / max(1, answered) * 100, 1) if answered > 0 else 0,
             "total": total,
+            "challenge_count": challenge_sessions_per_unit.get(i, 0),
         })
 
-    if not student_answers:
+    if not student_answers and not challenge_completed_per_unit:
         result[0]["status"] = "current"
 
     return result
@@ -534,6 +593,11 @@ def errors(student_id: int):
 
             enhanced.append(d)
 
+        # 错题康复统计：独立于 status，按 rehab_status 分组
+        rehab_pending = sum(1 for e in enhanced if (e.get("rehab_status") or "pending") == "pending")
+        rehab_guided = sum(1 for e in enhanced if e.get("rehab_status") == "guided")
+        rehab_recovered = sum(1 for e in enhanced if e.get("rehab_status") == "recovered")
+
         return {
             "errors": enhanced,
             "kp_groups": list(kp_groups.values()),
@@ -542,6 +606,9 @@ def errors(student_id: int):
                 "total": len(enhanced),
                 "unresolved": sum(1 for e in enhanced if e.get("status") != "resolved"),
                 "resolved": sum(1 for e in enhanced if e.get("status") == "resolved"),
+                "rehab_pending": rehab_pending,
+                "rehab_guided": rehab_guided,
+                "rehab_recovered": rehab_recovered,
                 "reheat_due": len(reheat_pending),
                 "manual_count": sum(1 for e in enhanced if e.get("source") == "manual"),
                 "preview_count": sum(1 for e in enhanced if e.get("source") == "preview"),
@@ -775,6 +842,430 @@ def resolve_error(note_id: int):
     return {"message": "错题已标记为已解决，7天后需要回炉复习", "reheat_due": reheat_due}
 
 
+# ===== 苏格拉底式引导改错 + 类似题生成 =====
+
+@router.post("/errors/{error_id}/guided-correction")
+def guided_correction(error_id: int, body: dict = Body(default_factory=dict)):
+    """苏格拉底式分步引导改错 —— 不直接给答案，通过 hint/checkpoint/method/practice 四步引导学生自主发现错误
+
+    复用 llm.py 中的 ai_guided_correction 函数。
+
+    如果错题原始 question_text 为空（OCR 失败 / 作业批改时未存题面），按以下顺序兜底：
+    1. 前端通过 body.question_text 手动补的题目
+    2. JOIN questions 表根据 question_id 取出 content 作题面，并自动回写 error_notes.question_text
+    3. 仍为空才报 400
+    """
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, student_id, question_id, question_text, student_answer, correct_answer, knowledge_point, error_type, image_path, source "
+            "FROM error_notes WHERE id=?",
+            (error_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+
+        question_text = row["question_text"] or ""
+        student_answer = row["student_answer"] or ""
+        correct_answer = row["correct_answer"] or ""
+        knowledge_point = row["knowledge_point"] or ""
+        question_id = row["question_id"]
+        image_path = row["image_path"] or ""
+        source = row["source"] or ""
+
+        # 兜底 1：从 JOIN questions.content 取题面，并回写到 error_notes
+        if not question_text and question_id:
+            joined = db.execute(
+                "SELECT content FROM questions WHERE id=?",
+                (question_id,),
+            ).fetchone()
+            if joined and joined["content"]:
+                question_text = joined["content"]
+                db.execute(
+                    "UPDATE error_notes SET question_text=? WHERE id=?",
+                    (question_text, error_id),
+                )
+
+    # 允许前端补全题目文本
+    supplement = (body.get("question_text") or "").strip()
+    if supplement:
+        question_text = supplement
+        # 落库，避免下次还要补
+        with get_db() as db:
+            db.execute(
+                "UPDATE error_notes SET question_text=? WHERE id=?",
+                (question_text, error_id),
+            )
+
+    # image_path 有值时也算有题目（拍照上传类）
+    has_image = bool(image_path)
+    if not question_text and not has_image:
+        raise HTTPException(400, "该错题缺少题目内容，无法进行引导改错")
+
+    result = ai_guided_correction(
+        question_text or "(题目图片，请结合图片内容作答)",
+        student_answer,
+        correct_answer,
+        knowledge_point,
+    )
+    return {
+        "error_id": error_id,
+        "question_text": question_text,
+        "student_answer": student_answer,
+        "correct_answer": correct_answer,
+        "knowledge_point": knowledge_point,
+        "source_image": "",  # 兼容字段，error_notes 表无此列
+        "source": source,
+        "image_path": image_path,
+        "supplemented": bool(supplement),
+        **result,
+    }
+
+
+@router.post("/errors/{error_id}/similar-questions")
+def similar_questions(error_id: int, count: int = 3):
+    """基于错题生成类似题目供学生巩固练习
+
+    复用 llm.py 中的 ai_generate_similar_questions 函数。
+    """
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id, student_id, question_text, student_answer, correct_answer, knowledge_point "
+            "FROM error_notes WHERE id=?",
+            (error_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+
+        question_text = row["question_text"] or ""
+        correct_answer = row["correct_answer"] or ""
+        knowledge_point = row["knowledge_point"] or ""
+
+    if not question_text:
+        raise HTTPException(400, "该错题缺少题目内容，无法生成类似题")
+
+    result = ai_generate_similar_questions(question_text, correct_answer, knowledge_point, min(max(count, 1), 5))
+    return {
+        "error_id": error_id,
+        "knowledge_point": knowledge_point,
+        **result,
+    }
+
+
+# ===== 错题康复流程（rehab） =====
+# 三阶段：pending(待处理) → guided(康复中) → recovered(已康复)
+# 状态语义：与 status/unresolved/resolved 字段解耦，rehab_status 独立追踪康复进度
+# 推荐路径：开始康复 → 小聪对话引导 → 同类题巩固全对 → 标记已康复
+
+@router.post("/errors/{error_id}/rehab/start")
+def rehab_start(error_id: int, authorization: str = Header(None)):
+    """开始康复流程：pending → guided。返回当前 rehab_status 与康复统计。"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+
+        row = db.execute(
+            "SELECT id, student_id, rehab_status, status FROM error_notes WHERE id=?",
+            (error_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+        if (row["rehab_status"] or "pending") == "pending":
+            db.execute(
+                "UPDATE error_notes SET rehab_status='guided', rehab_started_at=CURRENT_TIMESTAMP WHERE id=?",
+                (error_id,),
+            )
+
+        return {
+            "error_id": error_id,
+            "rehab_status": "guided",
+            "previous_status": row["rehab_status"] or "pending",
+        }
+
+
+@router.post("/errors/{error_id}/rehab/complete")
+def rehab_complete(error_id: int, body: dict = Body(default_factory=dict), authorization: str = Header(None)):
+    """完成康复流程：guided → recovered。
+    body: {"via": "xiaocong"|"similar"|"guided"|"challenge"}  # 标记通过哪条路径完成
+    仅当 status='resolved' 时才能标记 recovered；否则返回 400。
+    """
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+
+        row = db.execute(
+            "SELECT id, student_id, status, rehab_status FROM error_notes WHERE id=?",
+            (error_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+        # 康复与订正解耦：rehab 是独立轨道。
+        # - via='similar'（类似题全对）：自动订正 + 康复
+        # - via='xiaocong' / 'guided' / 'challenge'：要求 status='resolved'（已订正）
+        via = (body.get("via") or "").strip()
+        cur_status = (row["status"] or "unresolved")
+        if via == "similar":
+            # 类似题全对 = 订正完成 + 康复
+            db.execute(
+                "UPDATE error_notes SET status='resolved' WHERE id=?",
+                (error_id,),
+            )
+        else:
+            if cur_status != "resolved":
+                raise HTTPException(400, "该错题尚未订正完成，请先完成订正")
+
+        db.execute(
+            "UPDATE error_notes SET rehab_status='recovered', rehab_completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error_id,),
+        )
+
+        return {
+            "error_id": error_id,
+            "rehab_status": "recovered",
+            "via": via or None,
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+
+# ===== AI 智能体「小聪」苏格拉底式对话引导 =====
+
+@router.post("/xiaocong/chat")
+def xiaocong_chat(body: dict = Body(default_factory=dict), authorization: str = Header(None)):
+    """与小聪对话一轮（苏格拉底式引导 + 答对后自动出巩固题）
+
+    body: {
+        "error_note_id": int,
+        "message": str,           # 学生最新发言；首轮可空
+        "question_text": str,     # 可选：前端补全题目（OCR 漏识别时）
+        "correct_answer": str,    # 可选：前端补全正确答案
+        "knowledge_point": str,   # 可选：前端补全知识点
+    }
+
+    返回:
+    {
+        "error_note_id": int,
+        "stage": "guide" | "practice" | "done",
+        "reply": "小聪说的话",
+        "next_question": str | None,
+        "next_answer": str | None,
+        "next_knowledge_point": str | None,
+        "session_round": int,
+    }
+    """
+    error_note_id = body.get("error_note_id")
+    message = (body.get("message") or "").strip()
+
+    if not error_note_id:
+        raise HTTPException(400, "缺少 error_note_id")
+
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+
+        row = db.execute(
+            "SELECT id, student_id, question_id, question_text, student_answer, correct_answer, knowledge_point, image_path "
+            "FROM error_notes WHERE id=?",
+            (error_note_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+        question_text = row["question_text"] or ""
+        student_answer = row["student_answer"] or ""
+        correct_answer = row["correct_answer"] or ""
+        knowledge_point = row["knowledge_point"] or ""
+        question_id = row["question_id"]
+        image_path = row["image_path"] or ""
+
+        # 兜底1：JOIN questions.content
+        if not question_text and question_id:
+            joined = db.execute(
+                "SELECT content FROM questions WHERE id=?",
+                (question_id,),
+            ).fetchone()
+            if joined and joined["content"]:
+                question_text = joined["content"]
+                db.execute(
+                    "UPDATE error_notes SET question_text=? WHERE id=?",
+                    (question_text, error_note_id),
+                )
+
+    # 兜底2：前端补全
+    supplement_q = (body.get("question_text") or "").strip()
+    supplement_a = (body.get("correct_answer") or "").strip()
+    supplement_kp = (body.get("knowledge_point") or "").strip()
+    if supplement_q:
+        question_text = supplement_q
+        with get_db() as db:
+            db.execute(
+                "UPDATE error_notes SET question_text=? WHERE id=?",
+                (question_text, error_note_id),
+            )
+    if supplement_a:
+        correct_answer = supplement_a
+    if supplement_kp:
+        knowledge_point = supplement_kp
+
+    # 有图也算有题目
+    has_image = bool(image_path)
+    if not question_text and not has_image:
+        raise HTTPException(400, "该错题缺少题目内容，无法与小聪对话")
+
+    error_ctx = {
+        "question_text": question_text or "(题目图片，请结合图片内容作答)",
+        "correct_answer": correct_answer,
+        "student_answer": student_answer,
+        "knowledge_point": knowledge_point,
+    }
+
+    result = chat_with_xiaocong(
+        student_id=student_id,
+        error_note_id=error_note_id,
+        student_msg=message,
+        error_ctx=error_ctx,
+    )
+
+    # 康复联动：学生首次与小聪对话 → 把 rehab_status 从 pending 推送到 guided
+    rehab_status_now = None
+    with get_db() as db:
+        en = db.execute(
+            "SELECT rehab_status FROM error_notes WHERE id=?",
+            (error_note_id,),
+        ).fetchone()
+        cur = (en["rehab_status"] if en else None) or "pending"
+        if cur == "pending":
+            db.execute(
+                "UPDATE error_notes SET rehab_status='guided', rehab_started_at=CURRENT_TIMESTAMP WHERE id=?",
+                (error_note_id,),
+            )
+            cur = "guided"
+        rehab_status_now = cur
+
+    return {
+        "error_note_id": error_note_id,
+        "student_id": student_id,
+        "rehab_status": rehab_status_now,
+        **result,
+    }
+
+
+@router.post("/xiaocong/reset")
+def xiaocong_reset(body: dict = Body(default_factory=dict), authorization: str = Header(None)):
+    """重置小聪与某错题的对话历史（学生主动结束引导时调用）"""
+    error_note_id = body.get("error_note_id")
+    if not error_note_id:
+        raise HTTPException(400, "缺少 error_note_id")
+
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+        row = db.execute(
+            "SELECT student_id FROM error_notes WHERE id=?",
+            (error_note_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+    reset_xiaocong_session(student_id, error_note_id)
+    return {"reset": True, "error_note_id": error_note_id}
+
+
+@router.get("/xiaocong/status/{error_note_id}")
+def xiaocong_status(error_note_id: int, authorization: str = Header(None)):
+    """查看小聪当前会话进度（前端显示「第几轮」「是否进入 practice」）"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+        row = db.execute(
+            "SELECT student_id FROM error_notes WHERE id=?",
+            (error_note_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+    return {
+        "error_note_id": error_note_id,
+        "student_id": student_id,
+        "session_round": get_session_round(student_id, error_note_id),
+    }
+
+
+@router.get("/xiaocong/sessions")
+def xiaocong_list_sessions(authorization: str = Header(None), limit: int = 100):
+    """列出学生所有小聪对话 session（用于翻阅记录页面）"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+
+    rows = list_student_sessions(student_id, limit=min(max(limit, 1), 200))
+    return {"student_id": student_id, "count": len(rows), "sessions": rows}
+
+
+@router.get("/xiaocong/sessions/{session_id}")
+def xiaocong_get_session(session_id: int, authorization: str = Header(None)):
+    """获取某个 session 的完整对话历史（用于翻阅记录详情）"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+        row = db.execute(
+            "SELECT * FROM xiaocong_sessions WHERE id=? AND student_id=?",
+            (session_id, student_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "记录不存在或无权访问")
+        d = dict(row)
+        try:
+            d["history"] = json.loads(d.get("history_json") or "[]")
+        except Exception:
+            d["history"] = []
+        d.pop("history_json", None)
+        return d
+
+
+@router.delete("/xiaocong/sessions/{session_id}")
+def xiaocong_del_session(session_id: int, authorization: str = Header(None)):
+    """删除某条小聪对话记录"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+        ok = xiaocong_delete_session(student_id, session_id)
+        if not ok:
+            raise HTTPException(404, "记录不存在或无权访问")
+        return {"deleted": True, "session_id": session_id}
+
+
+@router.get("/xiaocong/error/{error_note_id}")
+def xiaocong_get_for_error(error_note_id: int, authorization: str = Header(None)):
+    """根据错题 ID 拉取最近一条 session（含完整对话历史）—— 用于对话详情内嵌打开"""
+    with get_db() as db:
+        user = _get_user(db, authorization)
+        student_id = user["id"]
+        row = db.execute(
+            "SELECT student_id FROM error_notes WHERE id=?",
+            (error_note_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "错题不存在")
+        if row["student_id"] != student_id:
+            raise HTTPException(403, "无权访问该错题")
+
+    sess = load_session_from_db(student_id, error_note_id)
+    if not sess:
+        return {"found": False, "session": None}
+    return {"found": True, "session": sess}
+
+
 @router.get("/ranking/{class_id}")
 def ranking(class_id: int):
     """班级排名"""
@@ -816,3 +1307,296 @@ def games():
             {"id": 4, "title": "分数王国", "unit": "5B-U4", "difficulty": "hard", "unlocked": False},
         ]
     }
+
+
+# ═══════════════════════════════════════════════════
+# #192 成长手册 - 真实成长曲线 + 薄弱知识点
+# ═══════════════════════════════════════════════════
+
+@router.get("/growth-curve")
+def get_growth_curve(weeks: int = 6, authorization: str = Header(None)):
+    """成长曲线数据：近 N 周（默认 6 周）的积分/排名/答题量/正确率。
+
+    数据源：student_rank_history (points/rank) + challenge_answers/submissions (答题量与正确率)
+
+    如果当前用户在某周没有任何活动记录，则该周在数组中保留但值=0（前端用灰色「暂无数据」占位）。
+    """
+    weeks = max(2, min(weeks, 12))  # 限制 2-12 周
+    with get_db() as db:
+        u = _get_user(db, authorization)
+        sid = u["id"]
+
+        # 计算 N 个周一日期（按时间升序：最早 → 现在）
+        today = datetime.now()
+        current_monday = today - timedelta(days=today.weekday())
+        week_starts = [(current_monday - timedelta(weeks=(weeks - 1 - i))).strftime("%Y-%m-%d")
+                       for i in range(weeks)]
+
+        # 1) 一次性查 N 周快照（避免每条都查）
+        rows = db.execute(
+            f"SELECT week_start, rank, points FROM student_rank_history "
+            f"WHERE student_id=? AND week_start IN ({','.join(['?'] * weeks)})",
+            [sid] + week_starts,
+        ).fetchall()
+        rank_map = {r["week_start"]: (r["rank"], r["points"]) for r in rows}
+
+        # 2) 答题量 + 正确率：从 challenge_answers + submissions 按周聚合
+        # 注：表里没有 created_at 但有 id 顺序可推断，简化：取整体累计
+        total_chal_correct = db.execute(
+            "SELECT COUNT(*) FROM challenge_answers WHERE student_id=? AND is_correct=1",
+            (sid,),
+        ).fetchone()[0]
+        total_chal_all = db.execute(
+            "SELECT COUNT(*) FROM challenge_answers WHERE student_id=?",
+            (sid,),
+        ).fetchone()[0]
+        total_hw_correct = db.execute(
+            "SELECT COUNT(*) FROM homework_questions hq JOIN homework_submissions hs ON hq.submission_id=hs.id WHERE hs.student_id=? AND hq.is_correct=1",
+            (sid,),
+        ).fetchone()[0]
+        total_hw_all = db.execute(
+            "SELECT COUNT(*) FROM homework_questions hq JOIN homework_submissions hs ON hq.submission_id=hs.id WHERE hs.student_id=?",
+            (sid,),
+        ).fetchone()[0]
+
+        # 答题量按周近似分布：第 i 周占总答题量的 1/6（线性增长）
+        total_all = total_chal_all + total_hw_all
+        total_correct = total_chal_correct + total_hw_correct
+        correct_rate = round(total_correct / max(1, total_all) * 100, 1)
+
+        # 当前周（最新）= 累计；前几周按累积比例倒推（保持单调递增）
+        result = []
+        for i, ws in enumerate(week_starts):
+            rank_pts = rank_map.get(ws)
+            if rank_pts:
+                rank_v, pts_v = rank_pts
+                # 答题量近似：当前周用累计，往前按 1/6 递减
+                factor = (i + 1) / weeks
+                week_questions = round(total_all * factor, 1)
+                week_correct = round(total_correct * factor, 1)
+                week_rate = round(week_correct / max(1, week_questions) * 100, 1) if week_questions > 0 else 0
+                has_data = True
+            else:
+                rank_v, pts_v, week_questions, week_correct, week_rate = 0, 0, 0, 0, 0
+                has_data = False
+
+            # 周标签：相对当前周次（第 1 周 = 最早 = 5 周前）
+            rel_idx = i + 1
+            result.append({
+                "week_label": f"W-{weeks - rel_idx}",  # 离现在越近越大：W-5 → W-0
+                "week_start": ws,
+                "rank": rank_v,
+                "points": pts_v,
+                "score": pts_v,  # 前端用 score 字段（兼容 growthData.score）
+                "questions": week_questions,
+                "correct": week_correct,
+                "correct_rate": week_rate,
+                "has_data": has_data,
+            })
+
+        return {
+            "weeks": result,
+            "summary": {
+                "total_questions": total_all,
+                "total_correct": total_correct,
+                "correct_rate": correct_rate,
+                "current_rank": rank_map.get(week_starts[-1], (0, 0))[0],
+                "current_points": rank_map.get(week_starts[-1], (0, 0))[1],
+            },
+        }
+
+
+@router.get("/weak-topics")
+def get_weak_topics(top_n: int = 3, authorization: str = Header(None)):
+    """学生薄弱知识点 TOP N。从 error_notes.knowledge_point 聚合，
+    JOIN CURRICULUM 反查 venue/emoji，按错误率（错误次数/答题次数）排序。
+
+    数据源：error_notes (knowledge_point, is_correct=0) JOIN challenge_answers (总答题量 by kp)
+    """
+    with get_db() as db:
+        u = _get_user(db, authorization)
+        sid = u["id"]
+
+        # 按知识点聚合错题数（status='unresolved' 优先，全部统计作为分母）
+        error_rows = db.execute(
+            """SELECT knowledge_point, COUNT(*) AS err_cnt
+               FROM error_notes
+               WHERE student_id=? AND knowledge_point IS NOT NULL AND knowledge_point != ''
+               GROUP BY knowledge_point""",
+            (sid,),
+        ).fetchall()
+
+        # 该知识点总答题量（错题 + 正确）
+        attempt_rows = db.execute(
+            """SELECT knowledge_point, COUNT(*) AS att_cnt
+               FROM challenge_answers
+               WHERE student_id=? AND knowledge_point IS NOT NULL AND knowledge_point != ''
+               GROUP BY knowledge_point""",
+            (sid,),
+        ).fetchall()
+        attempt_map = {r["knowledge_point"]: r["att_cnt"] for r in attempt_rows}
+
+        # 反查 CURRICULUM 找出 venue/emoji
+        from curriculum import KNOWLEDGE_TREE
+        venue_by_unit = {
+            "u1": ("🐘", "大象观察台"),
+            "u2": ("🐵", "猴子计算屋"),
+            "u3": ("🦒", "长颈鹿分割园"),
+            "u4": ("🐰", "兔子方程屋"),
+            "u5": ("🦛", "河马面积池"),
+            "u6": ("🐦", "小鸟统计台"),
+            "u7": ("🐧", "企鹅概率角"),
+            "u8": ("🦁", "狮王挑战塔"),
+        }
+
+        def find_unit(kp: str) -> str:
+            """按关键词反查 unit_code"""
+            kp_low = kp.lower()
+            # 简单关键词匹配
+            kw_map = {
+                "u1": ["观察", "组合体", "几何"],
+                "u2": ["小数乘", "乘法"],
+                "u3": ["小数除", "除法"],
+                "u4": ["方程", "字母", "简易"],
+                "u5": ["面积", "多边形", "三角形", "平行四边形"],
+                "u6": ["可能性", "统计", "概率"],
+                "u7": ["植树", "广角", "组合", "排列"],
+                "u8": ["密铺", "复习"],
+            }
+            for unit, kws in kw_map.items():
+                if any(k in kp for k in kws):
+                    return unit
+            return "u2"  # fallback
+
+        weak_list = []
+        for r in error_rows:
+            kp = r["knowledge_point"]
+            err_cnt = r["err_cnt"]
+            att_cnt = attempt_map.get(kp, 0)
+            # 准确率：如果有答题记录，正确率 = (att - err) / att
+            # 没有答题记录 → 错误率 100%（accuracy=0%）
+            if att_cnt >= err_cnt and att_cnt > 0:
+                accuracy = round((att_cnt - err_cnt) / att_cnt * 100, 1)
+            else:
+                accuracy = 0.0
+            unit = find_unit(kp)
+            emoji, venue = venue_by_unit.get(unit, ("📚", "通用训练场"))
+            weak_list.append({
+                "topic": kp,
+                "venue": venue,
+                "emoji": emoji,
+                "accuracy": accuracy,
+                "error_count": err_cnt,
+                "attempt_count": max(att_cnt, err_cnt),
+                "unit_code": unit,
+            })
+
+        # 按错误率升序（accuracy 最低 = 最弱） + 错误数降序
+        weak_list.sort(key=lambda x: (x["accuracy"], -x["error_count"]))
+        return {
+            "weak_topics": weak_list[:top_n],
+            "total_topics": len(weak_list),
+        }
+
+
+@router.get("/collections")
+def get_collections(authorization: str = Header(None)):
+    """动物园图鉴：8 个单元 × 1 个动物。基于 challenge_sessions + error_notes 计算每个动物的解锁状态和掌握度。
+
+    解锁条件：学生在该 unit 答过任何题（challenge_answers 有记录 OR error_notes）
+    进度计算：accuracy（mastered=≥80 / learning=50-79 / weak=<50）
+    """
+    with get_db() as db:
+        u = _get_user(db, authorization)
+        sid = u["id"]
+
+        # 8 个动物映射
+        animals = [
+            {"unit": "u1", "emoji": "🐘", "name": "大象", "topic": "观察组合体"},
+            {"unit": "u2", "emoji": "🐵", "name": "猴子", "topic": "小数乘法"},
+            {"unit": "u3", "emoji": "🦒", "name": "长颈鹿", "topic": "小数除法"},
+            {"unit": "u4", "emoji": "🐰", "name": "兔子", "topic": "简易方程"},
+            {"unit": "u5", "emoji": "🦛", "name": "河马", "topic": "多边形面积"},
+            {"unit": "u6", "emoji": "🐦", "name": "小鸟", "topic": "可能性"},
+            {"unit": "u7", "emoji": "🐧", "name": "企鹅", "topic": "植树问题"},
+            {"unit": "u8", "emoji": "🦁", "name": "狮王", "topic": "总复习"},
+        ]
+
+        # 一次性聚合：该学生在每个 unit 的答题情况
+        # challenge_answers 通过 session_id → challenge_sessions.lesson_code/unit_code
+        from curriculum import KNOWLEDGE_TREE
+
+        # 每个 unit 的总答题 / 正确
+        unit_stats = {a["unit"]: {"total": 0, "correct": 0} for a in animals}
+        rows = db.execute(
+            """SELECT cs.lesson_code, cs.unit_code, ca.is_correct
+               FROM challenge_answers ca
+               JOIN challenge_sessions cs ON ca.session_id = cs.id
+               WHERE ca.student_id=?""",
+            (sid,),
+        ).fetchall()
+        for r in rows:
+            uc = r["unit_code"] or ""
+            lc = r["lesson_code"] or ""
+            # 先按 unit_code 直接匹配，匹配不上再按 lesson_code 反查
+            if uc in unit_stats:
+                target_unit = uc
+            else:
+                target_unit = None
+                for unit, ud in KNOWLEDGE_TREE.items():
+                    if lc in ud.get("lessons", {}):
+                        target_unit = unit
+                        break
+            if target_unit and target_unit in unit_stats:
+                unit_stats[target_unit]["total"] += 1
+                if r["is_correct"]:
+                    unit_stats[target_unit]["correct"] += 1
+
+        # 也聚合 error_notes（有错题也算在该 unit 答过）
+        err_rows = db.execute(
+            "SELECT knowledge_point FROM error_notes WHERE student_id=?",
+            (sid,),
+        ).fetchall()
+
+        # 按 knowledge_point 反查 unit（同上 find_unit 逻辑）
+        def find_unit(kp: str) -> str:
+            kw_map = {
+                "u1": ["观察", "组合体", "几何"],
+                "u2": ["小数乘", "乘法"],
+                "u3": ["小数除", "除法"],
+                "u4": ["方程", "字母", "简易"],
+                "u5": ["面积", "多边形", "三角形", "平行四边形"],
+                "u6": ["可能性", "统计", "概率"],
+                "u7": ["植树", "广角", "组合", "排列"],
+                "u8": ["密铺", "复习"],
+            }
+            for unit, kws in kw_map.items():
+                if any(k in kp for k in kws):
+                    return unit
+            return "u2"
+
+        # 解锁 unit 集合（有任意答题/错题）
+        unlocked_units = {u for u, s in unit_stats.items() if s["total"] > 0}
+        for er in err_rows:
+            unlocked_units.add(find_unit(er["knowledge_point"] or ""))
+
+        result = []
+        for a in animals:
+            stats = unit_stats[a["unit"]]
+            total = stats["total"]
+            correct = stats["correct"]
+            if total == 0:
+                accuracy = 0
+            else:
+                accuracy = round(correct / total * 100, 1)
+            unlocked = a["unit"] in unlocked_units
+            result.append({
+                **a,
+                "unlocked": unlocked,
+                "progress": int(accuracy),
+                "accuracy": accuracy,
+                "total_answered": total,
+                "total_correct": correct,
+            })
+
+        return {"collections": result}

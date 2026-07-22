@@ -187,7 +187,7 @@ def list_assignments(authorization: str = Header(None)):
     with get_db() as db:
         rows = db.execute(
             """SELECT a.id, a.class_id, a.title, a.description, a.unit_code, a.type,
-            a.status, a.due_date, a.created_at, c.name as class_name
+            a.status, a.due_date, a.created_at, a.questions_json, c.name as class_name
             FROM assignments a
             LEFT JOIN classes c ON a.class_id = c.id
             WHERE a.teacher_id=?

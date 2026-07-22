@@ -434,6 +434,13 @@ def init_db():
         cursor.execute("ALTER TABLE error_notes ADD COLUMN reheat_count INTEGER DEFAULT 0")
     if 'reheat_due' not in en_columns:
         cursor.execute("ALTER TABLE error_notes ADD COLUMN reheat_due DATE")  # 下次回炉到期日
+    # 错题救助康复流程（独立于 reheat_status 回炉系统，三阶段：pending/guided/recovered）
+    if 'rehab_status' not in en_columns:
+        cursor.execute("ALTER TABLE error_notes ADD COLUMN rehab_status TEXT DEFAULT 'pending'")  # pending/guided/recovered
+    if 'rehab_started_at' not in en_columns:
+        cursor.execute("ALTER TABLE error_notes ADD COLUMN rehab_started_at DATETIME")
+    if 'rehab_completed_at' not in en_columns:
+        cursor.execute("ALTER TABLE error_notes ADD COLUMN rehab_completed_at DATETIME")
 
     # 迁移：为 assignments 表补充教师作业管理相关字段
     assignment_cols = [row[1] for row in cursor.execute("PRAGMA table_info(assignments)").fetchall()]
@@ -524,6 +531,37 @@ def init_db():
         detail_json TEXT DEFAULT '',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    """)
+
+    # 小聪智能体对话持久化表：每个 (student_id, error_note_id) 一条
+    # history_json 存全部对话轮次 [{role, content, stage, ts}]
+    cursor.executescript("""
+    CREATE TABLE IF NOT EXISTS xiaocong_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL REFERENCES users(id),
+        error_note_id INTEGER NOT NULL REFERENCES error_notes(id),
+        question_text TEXT DEFAULT '',
+        correct_answer TEXT DEFAULT '',
+        student_answer TEXT DEFAULT '',
+        knowledge_point TEXT DEFAULT '',
+        current_node TEXT DEFAULT 'step1_thought',
+        error_type TEXT DEFAULT '',
+        topic TEXT DEFAULT 'other',
+        recovery_q_index INTEGER DEFAULT 0,
+        user_mastered INTEGER DEFAULT 0,
+        summary_text TEXT DEFAULT '',
+        history_json TEXT DEFAULT '[]',
+        message_count INTEGER DEFAULT 0,
+        round_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME
+    );
+    CREATE INDEX IF NOT EXISTS idx_xiaocong_student
+        ON xiaocong_sessions(student_id, last_active_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_xiaocong_error
+        ON xiaocong_sessions(error_note_id, student_id);
     """)
 
     # 教师资源库：支持教师上传本地/地区资源，供同区县共享

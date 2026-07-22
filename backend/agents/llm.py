@@ -943,25 +943,14 @@ def ai_generate_similar_questions(question_text: str, correct_answer: str,
 1. 题目与原题知识点相同、难度相近，但数字和表述要改变
 2. 由易到难排列，第1道最接近原题，后面逐步增加变化
 3. 题目要准确、清晰，适合五年级学生
+4. **question 字段必须是完整的数学题题目本身**（如"6 × 7 = ?"或"一支铅笔3元，小明买4支需要多少钱？"），不要写"类题1（与原题最接近）"这样的描述！
 
 输出JSON格式：
 {{
   "questions": [
     {{
       "index": 1,
-      "question": "类题1（与原题最接近）",
-      "answer": "答案",
-      "explanation": "简要解题思路"
-    }},
-    {{
-      "index": 2,
-      "question": "类题2（稍加变化）",
-      "answer": "答案",
-      "explanation": "简要解题思路"
-    }},
-    {{
-      "index": 3,
-      "question": "类题3（进一步变化）",
+      "question": "完整的数学题目",
       "answer": "答案",
       "explanation": "简要解题思路"
     }}
@@ -1236,6 +1225,60 @@ def ai_analyze_error_knowledge(question_text: str, student_answer: str, correct_
         "common_mistake": "可能是计算粗心或概念不清。",
         "mnemonic": "仔细审题，认真计算！",
         "type_features": "类似的计算题。",
+    }
+
+
+def ai_generate_hint(question_text: str, correct_answer: str, knowledge_point: str = "",
+                     student_answer: str = "") -> dict:
+    """
+    饲养员提示：基于知识点+正确答案（+学生错答）生成一个"不剧透答案"的引导提示。
+    用于闯关答题区"饲养员提示"按钮。
+
+    返回:
+        {
+            "hint": "具体提示内容（1-2 句话，不直接给答案）",
+            "thinking_path": "思考路径关键词（如：先把大单位换小单位 → 用整数除法）"
+        }
+    """
+    student_part = ""
+    if student_answer:
+        student_part = f"\n- 学生的错误答案：{student_answer}\n"
+
+    prompt = f"""你是小学数学闯关游戏的"饲养员"。学生正在解一道闯关题，需要你给他一个不剧透正确答案的引导提示。
+
+**题目信息：**
+- 题目：{question_text}
+- 正确答案：{correct_answer}
+- 知识点：{knowledge_point or "小学数学"}
+{student_part}
+
+**提示要求（严格遵守）：**
+1. **绝对不能直接说出正确答案**！
+2. 用提问/类比/生活情境给学生方向感，让他自己想出来
+3. 1-2 句话，简洁清晰，五年级学生能听懂
+4. 如果学生答错了，可以点出思路偏差（如"你算的是乘法，其实题目让求的是……"）
+5. 如果学生没作答，可以提示"先审题，关键字是……"或"这道题可以用……方法试试"
+
+输出JSON格式：
+{{
+  "hint": "具体的提示内容（1-2 句，不超过 60 字）",
+  "thinking_path": "简短关键词（如：小数点对齐 → 从右往左逐位相乘）"
+}}
+
+只输出JSON，不要其他文字。"""
+
+    messages = [
+        {"role": "system", "content": "你是小学数学闯关游戏的'饲养员'，擅长用启发式提示帮助学生自己发现答案，绝不剧透。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    result = _call_llm_json(messages, temperature=0.6, max_tokens=400, timeout=30)
+    if result and isinstance(result, dict) and result.get("hint"):
+        return result
+    print("[LLM] 饲养员提示生成失败")
+    return {
+        "hint": f"回想一下「{knowledge_point or '这个知识点'}」的关键步骤是什么？一步步来。",
+        "thinking_path": knowledge_point or "审题 → 列式 → 计算 → 检查",
     }
 
 

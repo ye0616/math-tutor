@@ -979,6 +979,7 @@ def submit_preview_answer(req: SubmitAnswerRequest):
 
 # ===== 学生端：记录视频观看 =====
 
+
 @router.post("/student/preview/watch-log")
 def submit_watch_log(req: WatchLogRequest):
     """记录学生观看分层预习视频的进度"""

@@ -328,10 +328,21 @@ def analyze_class_errors(class_id: int, authorization: str = Header(None)):
         ]
 
         if not all_errors:
-            return {"analysis": {"summary": "暂无错题数据，无法分析", "weak_points": [], "suggestions": []}}
+            return {"analysis": {"summary": "暂无错题数据，无法分析", "weak_points": [], "suggestions": [], "urgent_actions": []}}
 
         result = ai_analyze_class_common_errors(all_errors)
-        return {"analysis": result}
+
+        # 适配前端 schema：common_weak_points/overall_analysis -> weak_points/summary
+        if isinstance(result, dict):
+            weak_points = result.get("common_weak_points") or result.get("weak_points") or []
+            normalized = {
+                "summary": result.get("overall_analysis") or result.get("summary") or "班级共性错题分析",
+                "weak_points": weak_points,
+                "suggestions": result.get("suggestions") or result.get("recommended_exercises") or [],
+                "urgent_actions": result.get("urgent_actions") or [],
+            }
+            return {"analysis": normalized}
+        return {"analysis": {"summary": "暂无错题数据，无法分析", "weak_points": [], "suggestions": [], "urgent_actions": []}}
 
 
 # ═══════════════════════════════════════════════════

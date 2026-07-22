@@ -49,6 +49,92 @@ _session_history: Dict[str, List[dict]] = {}
 MAX_HISTORY = 30
 
 
+# ============= 持久化辅助 =============
+
+def _persist_session(
+    student_id: int,
+    error_note_id: int,
+    *,
+    state: Optional[dict] = None,
+    history: Optional[List[dict]] = None,
+    question_text: str = "",
+    correct_answer: str = "",
+    student_answer: str = "",
+    knowledge_point: str = "",
+    summary_text: Optional[str] = None,
+    new_user_msg: Optional[str] = None,
+    new_xiaocong_msg: Optional[str] = None,
+    new_stage: Optional[str] = None,
+):
+    """Upsert xiaocong_sessions 行。
+
+    - 在内存会话结束后调用一次，把整段历史入库
+    - 也可以单条增量（new_user_msg/new_xiaocong_msg），但本项目以批量方式为主
+    - 失败只打 warning（不阻断对话）
+    """
+    try:
+        # 延迟导入避免循环
+        from database import get_db
+
+        sess_state = state or _get_state(student_id, error_note_id)
+        sess_hist = history if history is not None else _get_history(student_id, error_note_id)
+
+        # 把 history 转可序列化
+        safe_hist = [
+            {"role": h.get("role", "assistant"), "content": h.get("content", "")}
+            for h in sess_hist
+        ]
+        history_json = json.dumps(safe_hist, ensure_ascii=False)
+
+        with get_db() as db:
+            row = db.execute(
+                "SELECT id FROM xiaocong_sessions WHERE student_id=? AND error_note_id=? AND status='active' "
+                "ORDER BY last_active_at DESC LIMIT 1",
+                (student_id, error_note_id),
+            ).fetchone()
+            current_node = sess_state.get("current_node") or "step1_thought"
+            err_type = sess_state.get("error_type") or ""
+            topic = sess_state.get("topic") or "other"
+            rec_idx = sess_state.get("recovery_q_index", 0)
+            mastered = 1 if sess_state.get("user_mastered") else 0
+            status = "completed" if current_node == "done" else "active"
+            completed_at_clause = ", completed_at=CURRENT_TIMESTAMP" if status == "completed" else ""
+
+            params = (
+                question_text, correct_answer, student_answer, knowledge_point,
+                current_node, err_type, topic, rec_idx, mastered,
+                summary_text or "",
+                history_json,
+                len(safe_hist),
+                len(safe_hist) // 2,
+                status,
+            )
+            if row:
+                db.execute(
+                    f"""UPDATE xiaocong_sessions SET
+                        question_text=?, correct_answer=?, student_answer=?, knowledge_point=?,
+                        current_node=?, error_type=?, topic=?, recovery_q_index=?, user_mastered=?,
+                        summary_text=?, history_json=?, message_count=?, round_count=?,
+                        status=?, last_active_at=CURRENT_TIMESTAMP{completed_at_clause}
+                    WHERE id=?""",
+                    params + (row["id"],),
+                )
+            else:
+                db.execute(
+                    """INSERT INTO xiaocong_sessions
+                        (student_id, error_note_id, question_text, correct_answer, student_answer, knowledge_point,
+                         current_node, error_type, topic, recovery_q_index, user_mastered,
+                         summary_text, history_json, message_count, round_count, status,
+                         started_at, last_active_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                    (student_id, error_note_id) + params,
+                )
+    except Exception as exc:  # noqa: BLE001
+        # 持久化失败不影响对话
+        print(f"[xiaocong] persist_session warning: {exc}")
+
+
 def _session_key(student_id: int, error_note_id: int) -> str:
     return f"{student_id}:{error_note_id}"
 
@@ -101,6 +187,78 @@ def _reset_session(student_id: int, error_note_id: int):
     with _sessions_lock:
         _session_state.pop(key, None)
         _session_history.pop(key, None)
+
+
+def load_session_from_db(student_id: int, error_note_id: int) -> Optional[dict]:
+    """从 DB 读取学生该错题最近一条 active/completed session。
+
+    用于"翻阅历史"——前端无需重跑对话即可恢复整段历史和当前阶段。
+    """
+    try:
+        from database import get_db
+        with get_db() as db:
+            row = db.execute(
+                "SELECT * FROM xiaocong_sessions WHERE student_id=? AND error_note_id=? "
+                "ORDER BY last_active_at DESC LIMIT 1",
+                (student_id, error_note_id),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["history"] = json.loads(d.get("history_json") or "[]")
+        except Exception:
+            d["history"] = []
+        d.pop("history_json", None)
+        return d
+    except Exception as exc:  # noqa: BLE001
+        print(f"[xiaocong] load_session_from_db warning: {exc}")
+        return None
+
+
+def list_student_sessions(student_id: int, limit: int = 100) -> List[dict]:
+    """列出学生所有小聪对话 session，按最近活跃倒序。"""
+    try:
+        from database import get_db
+        with get_db() as db:
+            rows = db.execute(
+                """SELECT s.id, s.student_id, s.error_note_id,
+                          s.question_text, s.knowledge_point,
+                          s.current_node, s.error_type, s.topic,
+                          s.user_mastered, s.summary_text,
+                          s.message_count, s.round_count, s.status,
+                          s.started_at, s.last_active_at, s.completed_at,
+                          e.knowledge_point AS err_kp
+                  FROM xiaocong_sessions s
+                  LEFT JOIN error_notes e ON e.id = s.error_note_id
+                  WHERE s.student_id=?
+                  ORDER BY s.last_active_at DESC
+                  LIMIT ?""",
+                (student_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["question_preview"] = (d.get("question_text") or "")[:60]
+            out.append(d)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        print(f"[xiaocong] list_student_sessions warning: {exc}")
+        return []
+
+
+def delete_session(student_id: int, session_id: int) -> bool:
+    try:
+        from database import get_db
+        with get_db() as db:
+            cur = db.execute(
+                "DELETE FROM xiaocong_sessions WHERE id=? AND student_id=?",
+                (session_id, student_id),
+            )
+        return cur.rowcount > 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"[xiaocong] delete_session warning: {exc}")
+        return False
 
 
 # ============= 学生回复分析（启发式） =============
@@ -894,6 +1052,21 @@ def chat_with_xiaocong(
     new_state["current_node"] = final_node
     _set_state(student_id, error_note_id, new_state)
 
+    # 7. 持久化到 DB（best-effort，不阻断对话）
+    try:
+        _persist_session(
+            student_id, error_note_id,
+            state=new_state,
+            history=_get_history(student_id, error_note_id),
+            question_text=error_ctx.get("question_text", ""),
+            correct_answer=error_ctx.get("correct_answer", ""),
+            student_answer=error_ctx.get("student_answer", ""),
+            knowledge_point=error_ctx.get("knowledge_point", ""),
+            summary_text=parsed.get("summary_text") if final_node == "done" else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[xiaocong] persist_session warning: {exc}")
+
     return {
         "stage": final_node,  # 兼容旧字段名
         "node": final_node,
@@ -916,6 +1089,17 @@ def chat_with_xiaocong(
 
 def reset_xiaocong_session(student_id: int, error_note_id: int) -> dict:
     _reset_session(student_id, error_note_id)
+    # 把 DB 里 active 状态标记为 reset（保留历史可查阅）
+    try:
+        from database import get_db
+        with get_db() as db:
+            db.execute(
+                "UPDATE xiaocong_sessions SET status='reset', last_active_at=CURRENT_TIMESTAMP "
+                "WHERE student_id=? AND error_note_id=? AND status='active'",
+                (student_id, error_note_id),
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[xiaocong] reset_xiaocong_session warning: {exc}")
     return {"reset": True}
 
 

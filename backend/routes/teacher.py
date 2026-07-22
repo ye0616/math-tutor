@@ -87,72 +87,116 @@ def dashboard(teacher_id: int = None):
 
         # 综合待处理：预习答题 + 作业提交 + 商城兑换
         week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        pending_preview = db.execute(
-            "SELECT COUNT(*) as c FROM preview_answers WHERE submitted_at >= ?",
-            (week_ago,),
-        ).fetchone()
-        pending_homework = db.execute(
-            "SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ?",
-            (week_ago,),
-        ).fetchone()
+        # 教师班级 ID 列表（用于所有"我的班级"过滤）
+        class_ids = [c["id"] for c in class_list]
+        if class_ids:
+            cid_placeholders = ",".join("?" * len(class_ids))
+            # 学生 ID 子查询（用于 JOIN users）
+            student_id_subq = f"student_id IN (SELECT id FROM users WHERE class_id IN ({cid_placeholders}))"
+            student_id_params = class_ids
+        else:
+            student_id_subq = "1=0"
+            student_id_params = []
+
+        if class_ids:
+            pending_preview = db.execute(
+                f"SELECT COUNT(*) as c FROM preview_answers WHERE submitted_at >= ? AND {student_id_subq}",
+                (week_ago, *student_id_params),
+            ).fetchone()
+            pending_homework = db.execute(
+                f"SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ? AND {student_id_subq}",
+                (week_ago, *student_id_params),
+            ).fetchone()
+        else:
+            pending_preview = {"c": 0}
+            pending_homework = {"c": 0}
         total_pending = (pending_preview["c"] if pending_preview else 0) + (pending_homework["c"] if pending_homework else 0)
 
-        # 商城待处理兑换
-        if teacher_id:
-            class_ids = [c["id"] for c in class_list]
-            if class_ids:
-                placeholders = ",".join("?" * len(class_ids))
-                pending_redemptions = db.execute(
-                    f"SELECT COUNT(*) as c FROM redemptions WHERE class_id IN ({placeholders}) AND status='pending'",
-                    class_ids,
-                ).fetchone()
-            else:
-                pending_redemptions = {"c": 0}
+        # 商城待处理兑换（按班级过滤）
+        if class_ids:
+            placeholders = ",".join("?" * len(class_ids))
+            pending_redemptions = db.execute(
+                f"SELECT COUNT(*) as c FROM redemptions WHERE class_id IN ({placeholders}) AND status='pending'",
+                class_ids,
+            ).fetchone()
         else:
             pending_redemptions = {"c": 0}
 
-        # 错题本总数
-        error_total = db.execute("SELECT COUNT(*) as c FROM error_notes").fetchone()
-        # 本周新增错题
-        error_week = db.execute(
-            "SELECT COUNT(*) as c FROM error_notes WHERE created_at >= ?",
-            (week_ago,),
-        ).fetchone()
+        # 错题本总数（按班级学生过滤）
+        if class_ids:
+            error_total = db.execute(
+                f"SELECT COUNT(*) as c FROM error_notes WHERE {student_id_subq}",
+                student_id_params,
+            ).fetchone()
+            # 本周新增错题
+            error_week = db.execute(
+                f"SELECT COUNT(*) as c FROM error_notes WHERE created_at >= ? AND {student_id_subq}",
+                (week_ago, *student_id_params),
+            ).fetchone()
+        else:
+            error_total = {"c": 0}
+            error_week = {"c": 0}
 
-        # 创意闯关统计
-        challenge_total = db.execute("SELECT COUNT(*) as c FROM challenge_sessions").fetchone()
-        challenge_completed = db.execute(
-            "SELECT COUNT(*) as c FROM challenge_sessions WHERE status='completed'",
-        ).fetchone()
+        # 创意闯关统计（按班级学生过滤）
+        if class_ids:
+            challenge_total = db.execute(
+                f"SELECT COUNT(*) as c FROM challenge_sessions WHERE {student_id_subq}",
+                student_id_params,
+            ).fetchone()
+            challenge_completed = db.execute(
+                f"SELECT COUNT(*) as c FROM challenge_sessions WHERE status='completed' AND {student_id_subq}",
+                student_id_params,
+            ).fetchone()
+        else:
+            challenge_total = {"c": 0}
+            challenge_completed = {"c": 0}
 
-        # 作业统计
-        homework_submitted = db.execute(
-            "SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ?",
-            (week_ago,),
-        ).fetchone()
-        homework_questions = db.execute(
-            "SELECT COUNT(*) as c FROM homework_questions WHERE is_correct=1 AND created_at >= ?",
-            (week_ago,),
-        ).fetchone()
+        # 作业统计（按班级学生过滤）
+        if class_ids:
+            homework_submitted = db.execute(
+                f"SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ? AND {student_id_subq}",
+                (week_ago, *student_id_params),
+            ).fetchone()
+            homework_questions = db.execute(
+                f"SELECT COUNT(*) as c FROM homework_questions WHERE is_correct=1 AND created_at >= ? AND {student_id_subq}",
+                (week_ago, *student_id_params),
+            ).fetchone()
+        else:
+            homework_submitted = {"c": 0}
+            homework_questions = {"c": 0}
 
-        # 高频错题预警 - 从error_notes和preview_answers综合
-        error_topics = db.execute(
-            """SELECT q.unit_code, COUNT(*) as err_count
-               FROM preview_answers pa
-               JOIN preview_questions pq ON pa.preview_question_id=pq.id
-               LEFT JOIN questions q ON q.content LIKE '%' || pq.knowledge_point || '%'
-               WHERE pa.is_correct=0 AND pa.submitted_at >= ?
-               GROUP BY q.unit_code
-               ORDER BY err_count DESC LIMIT 5""",
-            (week_ago,),
-        ).fetchall()
+        # 高频错题预警 - 从preview_answers按班级学生过滤
+        if class_ids:
+            error_topics = db.execute(
+                f"""SELECT q.unit_code, COUNT(*) as err_count
+                    FROM preview_answers pa
+                    JOIN preview_questions pq ON pa.preview_question_id=pq.id
+                    LEFT JOIN questions q ON q.content LIKE '%' || pq.knowledge_point || '%'
+                    WHERE pa.is_correct=0 AND pa.submitted_at >= ? AND {student_id_subq}
+                    GROUP BY q.unit_code
+                    ORDER BY err_count DESC LIMIT 5""",
+                (week_ago, *student_id_params),
+            ).fetchall()
+        else:
+            error_topics = []
         error_warnings = [{"unit": r["unit_code"] or "知识点", "count": r["err_count"]} for r in error_topics]
 
         # 最近动态
         recent = _get_recent_activities(db, teacher_id, class_list)
 
-        # 题库总数
-        questions = db.execute("SELECT COUNT(*) as c FROM questions").fetchone()
+        # 题库总数 - 教师本人上传的（created_by=name 或 teacher_id）
+        if teacher_id:
+            teacher_user = db.execute("SELECT name FROM users WHERE id=?", (teacher_id,)).fetchone()
+            teacher_name = teacher_user["name"] if teacher_user else None
+            if teacher_name:
+                questions = db.execute(
+                    "SELECT COUNT(*) as c FROM questions WHERE created_by=?",
+                    (teacher_name,),
+                ).fetchone()
+            else:
+                questions = {"c": 0}
+        else:
+            questions = db.execute("SELECT COUNT(*) as c FROM questions").fetchone()
 
         # 学生分层分布
         layer_stats = {}
@@ -211,11 +255,17 @@ def _get_recent_activities(db, teacher_id, class_list):
                 "time": t["created_at"],
             })
 
-    # 学生答题活跃度
-    answers_recent = db.execute(
-        "SELECT COUNT(*) as c FROM preview_answers WHERE submitted_at >= ?",
-        (week_ago,),
-    ).fetchone()
+    # 学生答题活跃度（按班级学生过滤）
+    if class_list:
+        cid_list = [c["id"] for c in class_list]
+        cid_ph = ",".join("?" * len(cid_list))
+        stu_ph = f"student_id IN (SELECT id FROM users WHERE class_id IN ({cid_ph}))"
+        answers_recent = db.execute(
+            f"SELECT COUNT(*) as c FROM preview_answers WHERE submitted_at >= ? AND {stu_ph}",
+            (week_ago, *cid_list),
+        ).fetchone()
+    else:
+        answers_recent = {"c": 0}
     if answers_recent["c"] > 0:
         activities.append({
             "type": "submission",
@@ -224,11 +274,17 @@ def _get_recent_activities(db, teacher_id, class_list):
             "time": datetime.now().strftime("%Y-%m-%d"),
         })
 
-    # 错题预警
-    error_count = db.execute(
-        "SELECT COUNT(*) as c FROM preview_answers WHERE is_correct=0 AND submitted_at >= ?",
-        (week_ago,),
-    ).fetchone()
+    # 错题预警（按班级学生过滤）
+    if class_list:
+        cid_list = [c["id"] for c in class_list]
+        cid_ph = ",".join("?" * len(cid_list))
+        stu_ph = f"student_id IN (SELECT id FROM users WHERE class_id IN ({cid_ph}))"
+        error_count = db.execute(
+            f"SELECT COUNT(*) as c FROM preview_answers WHERE is_correct=0 AND submitted_at >= ? AND {stu_ph}",
+            (week_ago, *cid_list),
+        ).fetchone()
+    else:
+        error_count = {"c": 0}
     if error_count["c"] > 0:
         class_names = ", ".join([c.get("name", "") for c in class_list[:2] if c.get("name")])
         activities.append({
@@ -252,11 +308,17 @@ def _get_recent_activities(db, teacher_id, class_list):
                 "time": s["created_at"],
             })
 
-    # 作业提交动态
-    hw_recent = db.execute(
-        "SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ?",
-        (week_ago,),
-    ).fetchone()
+    # 作业提交动态（按班级学生过滤）
+    if class_list:
+        cid_list = [c["id"] for c in class_list]
+        cid_ph = ",".join("?" * len(cid_list))
+        stu_ph = f"student_id IN (SELECT id FROM users WHERE class_id IN ({cid_ph}))"
+        hw_recent = db.execute(
+            f"SELECT COUNT(*) as c FROM homework_submissions WHERE created_at >= ? AND {stu_ph}",
+            (week_ago, *cid_list),
+        ).fetchone()
+    else:
+        hw_recent = {"c": 0}
     if hw_recent and hw_recent["c"] > 0:
         activities.append({
             "type": "submission",
@@ -265,11 +327,17 @@ def _get_recent_activities(db, teacher_id, class_list):
             "time": datetime.now().strftime("%Y-%m-%d"),
         })
 
-    # 创意闯关动态
-    challenge_recent = db.execute(
-        "SELECT COUNT(*) as c FROM challenge_sessions WHERE created_at >= ?",
-        (week_ago,),
-    ).fetchone()
+    # 创意闯关动态（按班级学生过滤）
+    if class_list:
+        cid_list = [c["id"] for c in class_list]
+        cid_ph = ",".join("?" * len(cid_list))
+        stu_ph = f"student_id IN (SELECT id FROM users WHERE class_id IN ({cid_ph}))"
+        challenge_recent = db.execute(
+            f"SELECT COUNT(*) as c FROM challenge_sessions WHERE created_at >= ? AND {stu_ph}",
+            (week_ago, *cid_list),
+        ).fetchone()
+    else:
+        challenge_recent = {"c": 0}
     if challenge_recent and challenge_recent["c"] > 0:
         activities.append({
             "type": "submission",

@@ -926,14 +926,17 @@ def get_published_assignments(authorization: str = Header(None)):
         result = []
         for r in rows:
             d = dict(r)
-            # 计算题目数量
+            # 计算题目数量 + 解析题目列表（学生端选课题后直接展示）
+            q_list = []
             q_count = 0
             if d.get("questions_json"):
                 try:
-                    q_count = len(json.loads(d["questions_json"]))
+                    q_list = json.loads(d["questions_json"])
+                    q_count = len(q_list)
                 except:
                     pass
             d["question_count"] = q_count
+            d["questions"] = q_list  # 学生端作业卡片直接展示用
             # 检查该学生是否已提交
             sub = db.execute(
                 "SELECT id, status, correct_count, total_questions FROM homework_submissions "
@@ -948,8 +951,161 @@ def get_published_assignments(authorization: str = Header(None)):
             else:
                 d["submitted"] = False
                 d["submission_status"] = "not_submitted"
-            # 删除大字段
+            # 删除大字段（questions 已转 q_list）
             del d["questions_json"]
             result.append(d)
 
     return {"assignments": result}
+
+
+# ===== 学生提交作业答案（老师已出题场景） =====
+
+
+def _normalize_answer(s: str) -> str:
+    """归一化字符串用于判等：去空格/全角转半角/小写"""
+    if s is None:
+        return ""
+    s = str(s).strip().lower()
+    s = s.replace(" ", "").replace("　", "")
+    # 全角数字 → 半角
+    trans = str.maketrans("０１２３４５６７８９", "0123456789")
+    s = s.translate(trans)
+    return s
+
+
+def _is_equivalent(user_ans: str, correct_ans: str) -> bool:
+    """数字等价判定：归一化后相等，或小数/分数等价值"""
+    u = _normalize_answer(user_ans)
+    c = _normalize_answer(correct_ans)
+    if u == c:
+        return True
+    if not u or not c:
+        return False
+    # 数字等价
+    try:
+        return abs(float(u) - float(c)) < 1e-6
+    except (ValueError, TypeError):
+        pass
+    # 分数形式
+    try:
+        def _to_float(s):
+            if "/" in s:
+                n, d = s.split("/", 1)
+                return float(n) / float(d)
+            return float(s)
+        return abs(_to_float(u) - _to_float(c)) < 1e-6
+    except Exception:
+        pass
+    return False
+
+
+class AssignmentSubmitRequest(BaseModel):
+    assignment_id: int
+    answers: object  # str(JSON) 或 list
+
+
+@router.post("/assignment-submit")
+def submit_assignment_answer(req: AssignmentSubmitRequest, authorization: str = Header(None)):
+    """学生提交老师已布置作业的文字答案（不走拍照批改）。
+    逻辑：
+      1. 校验 assignment 存在且属于该学生班级
+      2. 比对每题答案，统计正确/总数
+      3. 写入 homework_submissions（assignment_id 关联）
+      4. 错题写入 error_notes
+    """
+    student_id = get_student_id(authorization)
+    assignment_id = req.assignment_id
+    # answers 字段可能是 str（前端 JSON.stringify）或 list
+    raw = req.answers
+    if isinstance(raw, str):
+        try:
+            answers_list = json.loads(raw)
+        except Exception:
+            raise HTTPException(400, "answers 字段格式错误")
+    else:
+        answers_list = raw or []
+
+    if not isinstance(answers_list, list):
+        raise HTTPException(400, "answers 必须是列表")
+
+    with get_db() as db:
+        # 校验作业
+        a = db.execute(
+            "SELECT id, class_id, title, questions_json FROM assignments WHERE id=? AND status='published'",
+            (assignment_id,),
+        ).fetchone()
+        if not a:
+            raise HTTPException(404, "作业不存在或未发布")
+        # 学生必须在该班级
+        stu = db.execute("SELECT class_id FROM users WHERE id=? AND role='student'", (student_id,)).fetchone()
+        if not stu or stu["class_id"] != a["class_id"]:
+            raise HTTPException(403, "该作业不属于你的班级")
+
+        # 解析作业题目
+        try:
+            questions = json.loads(a["questions_json"]) if a["questions_json"] else []
+        except Exception:
+            questions = []
+
+        # 判分
+        correct = 0
+        error_note_ids = []
+        for idx, q in enumerate(questions):
+            payload = next((p for p in answers_list if p.get("index") == (q.get("index") or idx + 1)), None)
+            if not payload:
+                # 也按顺序匹配兜底
+                payload = answers_list[idx] if idx < len(answers_list) else None
+            user_ans = (payload or {}).get("student_answer", "")
+            ca = q.get("correct_answer", "")
+            is_ok = _is_equivalent(user_ans, ca)
+            if is_ok:
+                correct += 1
+            else:
+                # 写错题
+                cur = db.execute(
+                    """INSERT INTO error_notes
+                    (student_id, question_text, student_answer, correct_answer,
+                     analysis, knowledge_point, source, status, error_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unresolved', 'assignment')""",
+                    (
+                        student_id,
+                        q.get("question_text", ""),
+                        user_ans,
+                        ca,
+                        q.get("analysis", ""),
+                        q.get("knowledge_point", ""),
+                        f"assignment:{assignment_id}",
+                    ),
+                )
+                error_note_ids.append(cur.lastrowid)
+
+        total = len(questions)
+        accuracy = round((correct / total) * 100, 1) if total > 0 else 0.0
+
+        # 写 submission（assignment_id 关联，老师端能查到）
+        sub = db.execute(
+            """INSERT INTO homework_submissions
+            (student_id, lesson_title, image_path, status, assignment_id,
+             total_questions, correct_count, summary, completed_at)
+            VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (
+                student_id,
+                a["title"],
+                "",
+                assignment_id,
+                total,
+                correct,
+                f"在线作答 正确 {correct}/{total}",
+            ),
+        )
+        submission_id = sub.lastrowid
+
+    return {
+        "success": True,
+        "submission_id": submission_id,
+        "total_questions": total,
+        "correct_count": correct,
+        "accuracy": accuracy,
+        "error_note_ids": error_note_ids,
+        "error_count": len(error_note_ids),
+    }

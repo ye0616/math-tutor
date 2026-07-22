@@ -20,7 +20,25 @@ def generate_inquiry(
     if not payload or payload.get("role") != "teacher":
         raise HTTPException(401, "请先登录教师账号")
 
-    result = ai_generate_interactive_inquiry(lesson_title, unit_info, difficulty)
+    try:
+        result = ai_generate_interactive_inquiry(lesson_title, unit_info, difficulty)
+    except Exception as e:
+        print(f"[inquiry.generate] 异常: {type(e).__name__}: {e}")
+        # 兜底：返回空 stages，让前端显示"AI 暂未生成"，不抛 500
+        return {
+            "success": True,
+            "data": {
+                "lesson_title": lesson_title,
+                "unit_info": unit_info,
+                "stages": [],
+                "_warning": "AI 生成异常，请稍后重试",
+            },
+        }
+
+    if not isinstance(result, dict):
+        result = {"stages": []}
+    if not isinstance(result.get("stages"), list):
+        result["stages"] = []
     return {"success": True, "data": result}
 
 

@@ -6,7 +6,8 @@
 
 import json
 import base64
-from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Header
+from typing import Optional, List
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Header, Query
 from database import get_db
 from auth import get_user_from_token
 from agents.llm import ai_generate_knowledge_graph, ai_analyze_class_common_errors, ai_ocr_question
@@ -342,8 +343,8 @@ def student_raw_data(student_id: int):
 # ===== 班级共性错题 =====
 
 @router.get("/class/{class_id}")
-def class_common_errors(class_id: int):
-    """获取班级共性错题数据"""
+def class_common_errors(class_id: int, assignment_ids: Optional[List[int]] = Query(None)):
+    """获取班级共性错题数据；可指定一个或多个作业ID，仅分析这些作业产生的错题"""
     with get_db() as db:
         # 获取班级所有学生
         students = db.execute(
@@ -357,13 +358,65 @@ def class_common_errors(class_id: int):
         student_ids = [s["id"] for s in students]
         id_str = ",".join(str(sid) for sid in student_ids)
 
+        # 构建过滤条件
+        where_clauses = [f"e.student_id IN ({id_str})", "e.status='unresolved'"]
+        params: List = []
+
+        if assignment_ids:
+            # 通过 submission_id 关联到 homework_submissions.assignment_id
+            sub_ids = db.execute(
+                "SELECT id FROM homework_submissions WHERE assignment_id IN ({})".format(",".join("?" * len(assignment_ids))),
+                assignment_ids,
+            ).fetchall()
+            if sub_ids:
+                sub_id_str = ",".join(str(r["id"]) for r in sub_ids)
+                hq_ids = db.execute(
+                    "SELECT id FROM homework_questions WHERE submission_id IN ({})".format(sub_id_str),
+                ).fetchall()
+                if hq_ids:
+                    hq_id_str = ",".join(str(r["id"]) for r in hq_ids)
+                    where_clauses.append(f"e.homework_question_id IN ({hq_id_str})")
+                else:
+                    return {
+                        "success": True,
+                        "data": {
+                            "student_count": len(students),
+                            "total_errors": 0,
+                            "kp_stats": {},
+                            "ai_analysis": {
+                                "common_weak_points": [],
+                                "overall_analysis": "选中的作业暂无未解决错题。",
+                                "urgent_actions": [],
+                                "recommended_exercises": [],
+                            },
+                        }
+                    }
+            else:
+                return {
+                    "success": True,
+                    "data": {
+                        "student_count": len(students),
+                        "total_errors": 0,
+                        "kp_stats": {},
+                        "ai_analysis": {
+                            "common_weak_points": [],
+                            "overall_analysis": "选中的作业暂无未解决错题。",
+                            "urgent_actions": [],
+                            "recommended_exercises": [],
+                        },
+                    }
+                }
+
+        where_sql = " AND ".join(where_clauses)
+
         # 汇总所有错题（来自预习、闯关、作业）
         all_errors = db.execute(
             f"""SELECT e.*, u.name as student_name
                FROM error_notes e
                JOIN users u ON e.student_id=u.id
-               WHERE e.student_id IN ({id_str}) AND e.status='unresolved'
+               WHERE {where_sql}
                ORDER BY e.created_at DESC LIMIT 100""",
+            params,
         ).fetchall()
 
         error_list = [dict(r) for r in all_errors]
