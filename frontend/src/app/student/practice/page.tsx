@@ -28,10 +28,38 @@ interface QuestionItem {
   question: string;
   question_type: string;
   difficulty: string;
-  options: string;
+  options: string[] | string;  // #196: AI 现统一输出 4 选项选择题
   correct_answer: string;
   analysis: string;
   knowledge_point: string;
+}
+
+// #196: 提取选择题选项（兼容字符串 / 数组 / undefined）
+function parseOptions(opts: string[] | string | undefined | null): string[] {
+  if (!opts) return [];
+  if (Array.isArray(opts)) return opts.filter(Boolean);
+  if (typeof opts === 'string') {
+    if (!opts.trim()) return [];
+    // 兼容 JSON 字符串 "[\"A. 0.12\", ...]"
+    try {
+      const j = JSON.parse(opts);
+      if (Array.isArray(j)) return j.filter(Boolean);
+    } catch {}
+    // 兼容 "A. 0.12|B. 1.2" 分隔
+    return opts.split(/[|\n]/).map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+// #196: 提取选项字母 "A. xxx" → "A"
+function optionLetter(opt: string): string {
+  const m = opt.match(/^([A-Da-d])/);
+  return m ? m[1].toUpperCase() : opt;
+}
+
+// #196: 选项内容 "A. xxx" → "xxx"
+function optionBody(opt: string): string {
+  return opt.replace(/^[A-Da-d][.、:：\s]\s*/, '').trim();
 }
 
 const difficulties = [
@@ -179,13 +207,30 @@ function StudentPractice() {
     const currentQ = questions[currentQIdx];
     if (!currentQ) return;
 
-    const isCorrect = answer.trim() === currentQ.correct_answer.trim();
+    // #196: 选择题判等——兼容学生输入字母 (A/B/C/D) 或具体内容 (0.12)
+    const opts = parseOptions(currentQ.options);
+    let studentAns = answer.trim();
+    let correctAns = (currentQ.correct_answer || '').trim();
+    if (opts.length > 0) {
+      // 标准化选择题：取字母
+      const studentLetter = studentAns.toUpperCase();
+      const correctLetter = correctAns.toUpperCase();
+      // 如果学生答的是内容（"0.12"），匹配到对应选项的字母
+      const matchedOpt = opts.find(o => o.includes(studentAns) || optionBody(o) === studentAns);
+      if (matchedOpt) {
+        studentAns = optionLetter(matchedOpt);
+      } else if (!/^[A-D]$/.test(studentLetter)) {
+        // 学生输入既不是字母也不在选项里 → 直接判错
+      }
+      correctAns = /^[A-D]$/.test(correctLetter) ? correctLetter : optionLetter(correctAns);
+    }
+    const isCorrect = studentAns.toUpperCase() === correctAns.toUpperCase();
     setFeedback(isCorrect ? 'correct' : 'wrong');
     setShowAnalysis(true);
     setAnsweredCount((c) => c + 1);
     if (isCorrect) setCorrectCount((c) => c + 1);
 
-    // #191: 答错/答对都上报，让 challenge_count 实时增长（之前只答错才上报 → 答对题数不计数）
+    // #191/#196: 答错/答对都上报，让 challenge_count 实时增长 + layer 写入 session
     try {
       const token = getToken();
       if (token && selectedVenue) {
@@ -195,15 +240,16 @@ function StudentPractice() {
         form.append('lesson_code', mapTagToLesson(selectedVenue.tag, currentQ.knowledge_point));
         form.append('level_index', String(currentQIdx + 1));
         form.append('question', currentQ.question);
-        form.append('student_answer', answer.trim());
-        form.append('correct_answer', currentQ.correct_answer);
+        form.append('student_answer', studentAns);
+        form.append('correct_answer', correctAns);
         form.append('knowledge_point', currentQ.knowledge_point || '');
+        form.append('difficulty', selectedDifficulty);  // #196: 把当前关卡难度透传给后端
         const res = await fetch(`${API_BASE}/challenge/answer`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: form,
         }).then(r => r.json()).catch(() => null);
-        // 答错 → 弹小聪 dialog
+        // 答错 → 弹小聪 dialog（#196：全屏 modal，体验更沉浸）
         if (!isCorrect && res?.success && res.data?.error_note_id) {
           setXiaocongErrorNoteId(res.data.error_note_id);
           setXiaocongOpen(true);
@@ -371,13 +417,14 @@ function StudentPractice() {
           {venues.map((v) => {
             const isCurrent = selectedVenue?.id === v.id;
             const isLocked = v.status === 'locked';
-            // #191: 闯关进度 + 正确率徽标
-            const challengeCount = v.challenge_count || 0;
-            const challengeRatio = Math.min(challengeCount / 3, 1);
+            // #196: 3 关全过解锁下一馆
+            const doneLayers = (v as any).done_layers ?? 0;
+            const totalLayers = 3;
+            const challengeRatio = doneLayers / totalLayers;
             const accuracy = v.accuracy || 0;
             const accuracyColor = accuracy >= 80 ? '#10B981' : accuracy >= 60 ? '#F59E0B' : accuracy > 0 ? '#EF4444' : '#9CA3AF';
             const accuracyBg = accuracy >= 80 ? 'rgba(16,185,129,0.15)' : accuracy >= 60 ? 'rgba(245,158,11,0.15)' : accuracy > 0 ? 'rgba(239,68,68,0.15)' : 'rgba(156,163,175,0.15)';
-            const challengeProgressColor = challengeCount >= 3 ? '#10B981' : '#FFB86C';
+            const layerProgressColor = doneLayers >= 3 ? '#10B981' : '#FFB86C';
             return (
               <button
                 key={v.id}
@@ -398,7 +445,7 @@ function StudentPractice() {
                   border: isCurrent ? '2px solid #FFB86C' : 'none',
                 }}
               >
-                {/* #191: 右上方正确率徽标 */}
+                {/* #196: 右上累计正确率徽标 */}
                 {!isLocked && accuracy > 0 && (
                   <div
                     className="absolute top-2 right-2 px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1"
@@ -420,6 +467,14 @@ function StudentPractice() {
                       <Check className="w-3.5 h-3.5" />
                     </span>
                   )}
+                  {v.status === 'partial' && (
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold text-white"
+                      style={{ background: 'linear-gradient(90deg, #FFB86C, #FF9F4A)' }}
+                    >
+                      {doneLayers}/3 关
+                    </span>
+                  )}
                   {v.status === 'current' && (
                     <span
                       className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold text-white"
@@ -439,16 +494,16 @@ function StudentPractice() {
                 </div>
                 <h4 className="font-bold text-sm" style={{ color: isLocked ? '#8B7355' : '#4A3728' }}>{v.name}</h4>
                 <p className="text-xs mt-1" style={{ color: v.status === 'current' ? '#FFB86C' : '#8B7355' }}>
-                  {isLocked ? '🔒 未解锁' : v.progress}
+                  {isLocked ? '🔒 未解锁' : `${doneLayers}/${totalLayers} 关已过`}
                 </p>
 
-                {/* #191: 闯关进度（3 个解锁下一馆） */}
+                {/* #196: 3 关进度条 */}
                 {!isLocked && (
                   <div className="mt-2.5">
                     <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: '#8B7355' }}>
                       <span className="font-medium">闯关进度</span>
-                      <span className="font-bold" style={{ color: challengeProgressColor }}>
-                        {challengeCount}/3 {challengeCount >= 3 ? '✓ 已解锁' : ''}
+                      <span className="font-bold" style={{ color: layerProgressColor }}>
+                        {doneLayers}/3 {doneLayers >= 3 ? '✓ 已解锁下一馆' : ''}
                       </span>
                     </div>
                     <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(200, 230, 192, 0.3)' }}>
@@ -456,7 +511,7 @@ function StudentPractice() {
                         className="h-full rounded-full transition-all"
                         style={{
                           width: `${challengeRatio * 100}%`,
-                          background: challengeCount >= 3
+                          background: doneLayers >= 3
                             ? 'linear-gradient(90deg, #10B981, #059669)'
                             : 'linear-gradient(90deg, #FFB86C, #FF9F4A)',
                         }}
@@ -625,30 +680,82 @@ function StudentPractice() {
                 </p>
               </div>
 
-              {/* Answer input */}
-              <div className="max-w-md mx-auto mb-6">
-                <label className="block text-sm font-medium mb-2" style={{ color: '#8B7355' }}>输入你的答案</label>
-                <input
-                  ref={inputRef}
-                  id="answer-input"
-                  type="text"
-                  placeholder="请输入答案..."
-                  value={answer}
-                  onChange={(e) => {
-                    setAnswer(e.target.value);
-                    if (feedback) return;
-                  }}
-                  onKeyDown={handleKeyDown}
-                  disabled={!!feedback}
-                  autoFocus
-                  className="w-full px-5 py-4 text-lg font-semibold rounded-2xl transition-all outline-none disabled:opacity-70"
-                  style={{
-                    background: 'rgba(255, 248, 240, 0.95)',
-                    border: feedback === 'wrong' ? '2px solid #FF8A8A' : feedback === 'correct' ? '2px solid #73C067' : '2px solid rgba(200, 230, 192, 0.7)',
-                    color: '#4A3728',
-                  }}
-                />
-              </div>
+              {/* #196: 选择题选项按钮（4 个 A/B/C/D 大按钮） */}
+              {parseOptions(currentQ.options).length > 0 ? (
+                <div className="max-w-2xl mx-auto mb-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {parseOptions(currentQ.options).map((opt, idx) => {
+                    const letter = optionLetter(opt);
+                    const body = optionBody(opt);
+                    const isSelected = answer.trim().toUpperCase() === letter;
+                    const isCorrectOpt = letter === (currentQ.correct_answer || '').trim().toUpperCase();
+                    const showAsAnswer = !!feedback && isCorrectOpt;
+                    const showAsWrongPick = !!feedback && isSelected && !isCorrectOpt;
+                    return (
+                      <button
+                        key={idx}
+                        id={`option-${letter}`}
+                        disabled={!!feedback}
+                        onClick={() => !feedback && setAnswer(letter)}
+                        className={`flex items-center gap-3 px-5 py-4 rounded-2xl text-left transition-all hover:scale-[1.02] active:scale-[0.98] disabled:cursor-not-allowed ${
+                          showAsAnswer ? 'ring-2 ring-green-500' :
+                          showAsWrongPick ? 'ring-2 ring-red-400' :
+                          isSelected ? 'ring-2 ring-amber-400' : ''
+                        }`}
+                        style={{
+                          background: showAsAnswer ? 'rgba(115, 192, 103, 0.18)' :
+                                       showAsWrongPick ? 'rgba(255, 138, 138, 0.15)' :
+                                       isSelected ? 'rgba(255, 184, 108, 0.15)' :
+                                       'rgba(255, 248, 240, 0.95)',
+                          border: showAsAnswer ? '2px solid #73C067' :
+                                   showAsWrongPick ? '2px solid #FF8A8A' :
+                                   isSelected ? '2px solid #FFB86C' :
+                                   '2px solid rgba(200, 230, 192, 0.6)',
+                          color: '#4A3728',
+                        }}
+                      >
+                        <span
+                          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm"
+                          style={{
+                            background: showAsAnswer ? '#73C067' :
+                                         showAsWrongPick ? '#FF8A8A' :
+                                         isSelected ? '#FFB86C' :
+                                         'rgba(200, 230, 192, 0.5)',
+                            color: (showAsAnswer || showAsWrongPick || isSelected) ? 'white' : '#4A3728',
+                          }}
+                        >{letter}</span>
+                        <span className="flex-1 font-semibold">{body || opt}</span>
+                        {showAsAnswer && <CheckCircle className="w-5 h-5 shrink-0" style={{ color: '#73C067' }} />}
+                        {showAsWrongPick && <XCircle className="w-5 h-5 shrink-0" style={{ color: '#FF8A8A' }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* 填空/计算题：文本输入 */
+                <div className="max-w-md mx-auto mb-6">
+                  <label className="block text-sm font-medium mb-2" style={{ color: '#8B7355' }}>输入你的答案</label>
+                  <input
+                    ref={inputRef}
+                    id="answer-input"
+                    type="text"
+                    placeholder="请输入答案..."
+                    value={answer}
+                    onChange={(e) => {
+                      setAnswer(e.target.value);
+                      if (feedback) return;
+                    }}
+                    onKeyDown={handleKeyDown}
+                    disabled={!!feedback}
+                    autoFocus
+                    className="w-full px-5 py-4 text-lg font-semibold rounded-2xl transition-all outline-none disabled:opacity-70"
+                    style={{
+                      background: 'rgba(255, 248, 240, 0.95)',
+                      border: feedback === 'wrong' ? '2px solid #FF8A8A' : feedback === 'correct' ? '2px solid #73C067' : '2px solid rgba(200, 230, 192, 0.7)',
+                      color: '#4A3728',
+                    }}
+                  />
+                </div>
+              )}
 
               {/* Action buttons */}
               {!feedback ? (

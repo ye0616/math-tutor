@@ -189,6 +189,7 @@ def submit_challenge_answer(
     correct_answer: str = Form(...),
     knowledge_point: str = Form(""),
     unit_code: str = Form(""),  # #191 修复：允许前端直传 unit_code（venue_to_unit 错位）
+    difficulty: str = Form(default=""),  # #196 修复：场馆闯关 difficulty 透传 basic/advanced/extension
     authorization: str = Header(None),
 ):
     """闯关答题 - 学生提交答案，AI判断正误+反馈"""
@@ -230,11 +231,11 @@ def submit_challenge_answer(
                 "WHERE student_id=? AND unit_code=? AND status='active'",
                 (student_id, unit_code),
             )
-            # 新开一个 active session
+            # 新开一个 active session（#196 修复：写入 layer + source='practice'，便于 3 关解锁判定）
             cursor = db.execute(
-                "INSERT INTO challenge_sessions (student_id, unit_code, lesson_code, theme, theme_intro, questions_json, status, total_correct, total_questions) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'active', 0, 1)",
-                (student_id, unit_code, lesson_code, "练习馆", "学生练习馆答题", "[]"),
+                "INSERT INTO challenge_sessions (student_id, unit_code, lesson_code, theme, theme_intro, questions_json, status, total_correct, total_questions, layer, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'active', 0, 1, ?, 'practice')",
+                (student_id, unit_code, lesson_code, f"练习馆·{difficulty or '基础'}", f"学生练习馆{difficulty or '基础'}关答题", "[]", difficulty or ""),
             )
             session_id = cursor.lastrowid
 

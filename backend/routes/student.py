@@ -291,22 +291,23 @@ def _build_daily_tasks(db, student_id: int, class_id: int | None, today_str: str
 def _compute_venue_progress(student_id: int, db):
     """根据答题数据计算场馆解锁进度
 
-    解锁条件（任一即可解锁下一馆）：
-    - 上一馆 correct >= 5（基于 preview_answers）
-    - 上一馆对应 unit_code 的 challenge_sessions completed >= 3
+    #196 重构：3 关都过（basic + advanced + extension 都有完成 session）才解锁下一馆
+    - 每个场馆对应 3 个难度关卡：basic / advanced / extension
+    - 解锁下一馆条件：上一馆 3 个 layer 都有 completed session
+    - 单关完成：至少 1 道题答对（is_correct=1）
     """
     from curriculum import KNOWLEDGE_TREE
 
-    # venue 与 unit_code 的映射（与 _compute_venue_progress 内的 venue_map 顺序对齐）
+    # venue 与 unit_code 的映射
     venue_to_unit = [
-        "u1",  # 整数加减馆 → 第一单元 观察组合体（用 u1-l1/l2/l3 对应）
-        "u2",  # 小数乘法馆 → 第二单元
-        "u3",  # 小数除法馆 → 第三单元
-        "u4",  # 简易方程馆 → 暂映射 u4 图形的运动
-        "u5",  # 多边形面积馆 → u5 用字母表示数
-        "u6",  # 可能性馆 → u6 多边形的面积
-        "u7",  # 数学广角馆 → u7 可能性
-        "u8",  # 总复习馆 → u8 植树问题
+        "u1",  # 整数加减馆
+        "u2",  # 小数乘法馆
+        "u3",  # 小数除法馆
+        "u4",  # 简易方程馆
+        "u5",  # 多边形面积馆
+        "u6",  # 可能性馆
+        "u7",  # 数学广角馆
+        "u8",  # 总复习馆
     ]
     venue_map = [
         {"id": 1, "emoji": "🦁", "name": "整数加减馆", "tag": "加减法"},
@@ -318,8 +319,9 @@ def _compute_venue_progress(student_id: int, db):
         {"id": 7, "emoji": "🐴", "name": "数学广角馆", "tag": "优化"},
         {"id": 8, "emoji": "🦛", "name": "总复习馆", "tag": "复习"},
     ]
-    total_per_venue = 8  # 每场馆题数
+    REQUIRED_LAYERS = {"basic", "advanced", "extension"}
 
+    # 旧数据兼容：preview_answers 仍统计（answer type=preview 答题）
     student_answers = db.execute(
         "SELECT pq.knowledge_point, pa.is_correct FROM preview_answers pa "
         "JOIN preview_questions pq ON pa.preview_question_id=pq.id "
@@ -342,68 +344,76 @@ def _compute_venue_progress(student_id: int, db):
         if a["is_correct"]:
             correct_per_venue[venue_idx] += 1
 
-    # #191 修复：每馆对应 unit 的挑战闯关 session 总数（不限 status）
-    # 之前只算 status='completed'，但 practice 页答题只创建 active session，永远不 complete → 永远 0
-    challenge_sessions_per_unit = {}
+    # #196 重构：统计每个 unit 下每个 layer 的"完成度"
+    # 完成度 = 该 layer 至少有 1 道答对的题（有 is_correct=1 的 challenge_answer 记录）
+    layer_completed_per_unit = {}  # {(unit_code, layer): bool}
     rows = db.execute(
-        "SELECT unit_code, COUNT(*) AS cnt FROM challenge_sessions "
-        "WHERE student_id=? GROUP BY unit_code",
+        "SELECT cs.unit_code, cs.layer, "
+        "  (SELECT COUNT(*) FROM challenge_answers ca "
+        "   WHERE ca.session_id=cs.id AND ca.is_correct=1) AS correct_count, "
+        "  (SELECT COUNT(*) FROM challenge_answers ca "
+        "   WHERE ca.session_id=cs.id) AS total_count "
+        "FROM challenge_sessions cs "
+        "WHERE cs.student_id=? AND cs.unit_code IS NOT NULL AND cs.unit_code != ''",
         (student_id,),
     ).fetchall()
     for r in rows:
-        # unit_code -> venue_idx
         uc = r["unit_code"]
-        if uc in venue_to_unit:
-            venue_idx = venue_to_unit.index(uc)
-            challenge_sessions_per_unit[venue_idx] = r["cnt"]
+        layer = r["layer"] or "basic"
+        # 只要该 session 有答对的题，就算该 layer 完成（最低门槛）
+        if r["correct_count"] and r["correct_count"] > 0:
+            layer_completed_per_unit[(uc, layer)] = True
 
-    # #191 修复：再统计完成数（用于解锁判断 3 sessions 阈值）
-    challenge_completed_per_unit = {}
-    rows2 = db.execute(
-        "SELECT unit_code, COUNT(*) AS cnt FROM challenge_sessions "
-        "WHERE student_id=? AND status='completed' GROUP BY unit_code",
-        (student_id,),
-    ).fetchall()
-    for r in rows2:
-        uc = r["unit_code"]
-        if uc in venue_to_unit:
-            venue_idx = venue_to_unit.index(uc)
-            challenge_completed_per_unit[venue_idx] = r["cnt"]
+    def _unit_three_layers_done(unit_code):
+        """检查某个 unit 的 3 个 layer 是否都完成"""
+        if not unit_code:
+            return False
+        return all(layer_completed_per_unit.get((unit_code, layer), False) for layer in REQUIRED_LAYERS)
 
     def _is_unlocked(i):
-        """该馆是否解锁：上一馆 preview correct>=5 或 上一馆闯关 sessions>=3"""
+        """该馆是否解锁：上一馆 3 关全过 = 解锁"""
         if i == 0:
             return True
-        prev_correct = correct_per_venue.get(i - 1, 0)
-        prev_challenge = challenge_sessions_per_unit.get(i - 1, 0)
-        return prev_correct >= 5 or prev_challenge >= 3
+        prev_unit = venue_to_unit[i - 1] if i - 1 < len(venue_to_unit) else ""
+        return _unit_three_layers_done(prev_unit)
 
     result = []
     for i, v in enumerate(venue_map):
         answered = answered_per_venue.get(i, 0)
         correct = correct_per_venue.get(i, 0)
-        total = total_per_venue
+        this_unit = venue_to_unit[i] if i < len(venue_to_unit) else ""
         unlocked = _is_unlocked(i)
 
-        # 状态：locked / current / done
-        # done 仍要求 completed >= 3（确保真正通关）
-        if not unlocked:
-            status = "locked"
-        elif challenge_completed_per_unit.get(i, 0) >= 3 or correct >= 5:
+        # 当前馆已完成的 layer 数
+        done_layers = sum(
+            1 for layer in REQUIRED_LAYERS
+            if layer_completed_per_unit.get((this_unit, layer), False)
+        )
+        # 状态：locked / current / partial / done
+        # 优先级：先看 done（不受 unlocked 影响——只要本馆 3 关全过就 done）
+        # 再看 unlocked，最后 partial / current
+        if done_layers >= 3:
             status = "done"
+        elif not unlocked:
+            status = "locked"
+        elif done_layers >= 1:
+            status = "partial"
         else:
             status = "current"
 
         result.append({
             **v,
             "status": status,
-            "progress": f"{correct}/{total}",
+            "progress": f"{done_layers}/3 关",
             "accuracy": round(correct / max(1, answered) * 100, 1) if answered > 0 else 0,
-            "total": total,
-            "challenge_count": challenge_sessions_per_unit.get(i, 0),
+            "total": 3,  # 3 关
+            "challenge_count": sum(
+                1 for (uc, _layer), _done in layer_completed_per_unit.items() if uc == this_unit
+            ),
+            "done_layers": done_layers,
         })
 
-    if not student_answers and not challenge_completed_per_unit:
+    if not student_answers and not layer_completed_per_unit:
         result[0]["status"] = "current"
 
     return result
@@ -450,8 +460,12 @@ def practice_questions(
         topic = venue_knowledge_map.get(venue, "小数乘法")
 
         # AI生成练习题
+        # 修：参数顺序 lesson_title, grade, layer, knowledge_points
         questions_data = ai_generate_exercises_v2(
-            topic, "五年级", [topic], difficulty
+            lesson_title=topic,
+            grade="五年级",
+            layer=difficulty,
+            knowledge_points=[topic],
         )
 
         if not questions_data or "questions" not in questions_data:
@@ -492,20 +506,52 @@ def practice_questions(
 
 
 def _mock_practice_questions(topic: str, difficulty: str):
-    """Mock 练习题 - AI 降级备用"""
+    """Mock 练习题 - AI 降级备用（选择题格式）"""
     diff_mult = {"basic": 1, "advanced": 2, "extension": 3}[difficulty]
+    # 按主题生成针对性的干扰项（即使 mock 也要贴近主题）
+    mock_bank = {
+        "小数乘法": [
+            ("0.3 × 0.4 = ?", ["A. 0.12", "B. 1.2", "C. 0.012", "D. 12"], "A", "0.3×0.4 = 3×4÷100 = 0.12"),
+            ("0.5 × 1.2 = ?", ["A. 0.6", "B. 6.0", "C. 0.06", "D. 60"], "A", "0.5×1.2 = 5×12÷100 = 0.6"),
+            ("1.5 × 2 = ?", ["A. 3", "B. 3.0", "C. 0.3", "D. 30"], "B", "1.5×2 = 3.0"),
+            ("0.25 × 0.4 = ?", ["A. 1.0", "B. 0.1", "C. 0.01", "D. 10"], "B", "0.25×0.4 = 25×4÷1000 = 0.1"),
+            ("2.4 × 0.5 = ?", ["A. 1.2", "B. 12", "C. 0.12", "D. 1.20"], "A", "2.4×0.5 = 2.4÷2 = 1.2"),
+        ],
+        "小数除法": [
+            ("0.6 ÷ 0.2 = ?", ["A. 3", "B. 0.3", "C. 30", "D. 0.03"], "A", "0.6÷0.2 = 6÷2 = 3"),
+            ("4.8 ÷ 0.6 = ?", ["A. 8", "B. 0.8", "C. 80", "D. 0.08"], "A", "4.8÷0.6 = 48÷6 = 8"),
+            ("1.2 ÷ 0.3 = ?", ["A. 4", "B. 0.4", "C. 40", "D. 0.04"], "A", "1.2÷0.3 = 12÷3 = 4"),
+            ("7.2 ÷ 0.9 = ?", ["A. 8", "B. 0.8", "C. 80", "D. 0.08"], "A", "7.2÷0.9 = 72÷9 = 8"),
+            ("0.81 ÷ 0.9 = ?", ["A. 9", "B. 0.9", "C. 90", "D. 0.09"], "B", "0.81÷0.9 = 8.1÷9 = 0.9"),
+        ],
+        "整数加减法": [
+            ("3.6 + 2.4 = ?", ["A. 6", "B. 5.10", "C. 6.0", "D. 60"], "A", "3.6+2.4 = 6.0"),
+            ("5.7 - 2.3 = ?", ["A. 3.4", "B. 3.40", "C. 0.34", "D. 34"], "A", "5.7-2.3 = 3.4"),
+            ("1.5 + 2.7 = ?", ["A. 4.2", "B. 4.20", "C. 0.42", "D. 42"], "A", "1.5+2.7 = 4.2"),
+            ("8.9 - 3.4 = ?", ["A. 5.5", "B. 5.50", "C. 0.55", "D. 55"], "A", "8.9-3.4 = 5.5"),
+            ("6.5 + 1.8 = ?", ["A. 8.3", "B. 8.30", "C. 0.83", "D. 83"], "A", "6.5+1.8 = 8.3"),
+        ],
+    }
+    bank = mock_bank.get(topic, [
+        (f"{topic}题{i+1}：计算 {diff_mult*(i+1)} + {diff_mult*2} = ?",
+         [f"A. {diff_mult*(i+1)+diff_mult*2}", f"B. {diff_mult*(i+1)+diff_mult*2+1}",
+          f"C. {diff_mult*(i+1)+diff_mult*2-1}", f"D. {diff_mult*(i+1)*diff_mult*2}"],
+         "A", f"直接相加：{diff_mult*(i+1)} + {diff_mult*2} = {diff_mult*(i+1)+diff_mult*2}")
+        for i in range(5)
+    ])
     return [
         {
             "id": i + 1,
-            "question": f"{topic}练习题 {i+1}：计算 {diff_mult * (i+1)} + {diff_mult * 2} = ?",
-            "question_type": "fill",
-            "difficulty": difficulty,
-            "options": "",
-            "correct_answer": str(diff_mult * (i+1) + diff_mult * 2),
-            "analysis": f"这是一道{topic}的基础练习，直接计算即可",
+            "type": "选择题",
+            "question": q_text,
+            "options": options,
+            "correct_answer": ans,
+            "analysis": anas,
             "knowledge_point": topic,
+            "difficulty": difficulty,
+            "layer": difficulty,
         }
-        for i in range(5)
+        for i, (q_text, options, ans, anas) in enumerate(bank[:5])
     ]
 
 

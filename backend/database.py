@@ -442,6 +442,13 @@ def init_db():
     if 'rehab_completed_at' not in en_columns:
         cursor.execute("ALTER TABLE error_notes ADD COLUMN rehab_completed_at DATETIME")
 
+    # 迁移：为 challenge_sessions 表补充 layer 和 source 字段（用于「3 关全过解锁下一馆」判定）
+    cs_columns = [row[1] for row in cursor.execute("PRAGMA table_info(challenge_sessions)").fetchall()]
+    if 'layer' not in cs_columns:
+        cursor.execute("ALTER TABLE challenge_sessions ADD COLUMN layer TEXT DEFAULT ''")  # basic/advanced/extension
+    if 'source' not in cs_columns:
+        cursor.execute("ALTER TABLE challenge_sessions ADD COLUMN source TEXT DEFAULT 'challenge'")  # challenge/practice
+
     # 迁移：为 assignments 表补充教师作业管理相关字段
     assignment_cols = [row[1] for row in cursor.execute("PRAGMA table_info(assignments)").fetchall()]
     if 'teacher_id' not in assignment_cols:

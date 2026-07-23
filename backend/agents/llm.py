@@ -693,7 +693,7 @@ def ai_generate_lesson_plan(lesson_title, grade="五年级", layer="basic", know
 
 def ai_generate_exercises_v2(lesson_title, grade="五年级", layer="basic", knowledge_points=None):
     """
-    AI 生成分层练习题（增强版，返回更丰富的结构化内容）
+    AI 生成分层练习题（场馆闯关专用，统一输出 5 道选择题）
 
     参数:
         lesson_title: 课题名称
@@ -702,54 +702,55 @@ def ai_generate_exercises_v2(lesson_title, grade="五年级", layer="basic", kno
         knowledge_points: 已知知识点列表
 
     返回:
-        dict: 结构化练习内容
+        dict: 结构化练习内容（统一为选择题格式，便于前端渲染）
     """
     kp_text = f"\n本课时核心知识点: {', '.join(knowledge_points)}" if knowledge_points else ""
     layer_desc = _LAYER_DESC.get(layer, _LAYER_DESC["basic"])
 
-    prompt = f"""你是人教版小学数学{grade}出题专家。请为课题「{lesson_title}」设计一份{layer_desc}的练习题集。
+    prompt = f"""你是人教版小学数学{grade}出题专家。请为课题「{lesson_title}」设计 5 道{layer_desc}的练习题。
 
 {kp_text}
 
-要求：
-1. 题目要贴合人教版{grade}教材，难度符合该层次学生水平
-2. 题目真实、准确、有教学价值
-3. 解析要详细、有步骤、帮助学生理解
-4. 标注每题对应的知识点
+硬性要求（务必遵守）：
+1. **全部使用选择题**，每题固定 4 个选项 A/B/C/D，方便小学生作答
+2. 题目必须紧扣课题「{lesson_title}」，不要出无关的加减乘除
+3. 每题的 4 个选项中只有 1 个正确答案，其余 3 个是常见错误答案或干扰项
+4. 题目数字简单，适合{grade}学生口算或简单笔算
+5. 解析要详细、有步骤，帮助学生理解
 
-输出JSON格式：
+输出 JSON 格式（严格遵守，不要任何多余文字）：
 {{
-  "title": "练习标题（如：{lesson_title}·基础练习）",
+  "title": "{lesson_title}·{layer_desc.split('——')[0]}练习",
   "questions": [
     {{
       "id": 1,
-      "type": "选择题/填空题/计算题/应用题",
+      "type": "选择题",
       "question": "题目内容",
       "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
-      "answer": "A 或具体答案",
+      "answer": "A",
       "analysis": "详细解析（包含解题步骤）",
       "knowledge_point": "对应知识点"
     }}
   ]
 }}
 
-基础层：3道选择题+1道填空题+1道计算题
-提升层：2道计算题+2道应用题+1道变式题
-拓展层：1道挑战题+2道应用题+1道探究题+1道思维题
-
-只输出JSON，不要其他文字。"""
+要求出 5 道题，难度层次递进。只输出 JSON，不要其他文字。"""
 
     messages = [
-        {"role": "system", "content": "你是人教版小学数学教研员，精通分层出题和练习题编写。"},
+        {"role": "system", "content": f"你是人教版小学数学{grade}教研员，出题风格贴近{grade}学生，擅长用选择题形式考查核心知识点。"},
         {"role": "user", "content": prompt},
     ]
 
-    result = _call_llm_json(messages, temperature=0.5, max_tokens=2000, timeout=90)
+    result = _call_llm_json(messages, temperature=0.5, max_tokens=2500, timeout=90)
     if result and isinstance(result, dict):
         if "title" not in result:
             result["title"] = f"{lesson_title}·{layer_desc.split('——')[0]}练习"
         if "questions" not in result:
             result["questions"] = []
+        # 给每道题打 layer 标记，方便前端/后端按难度统计
+        for q in result["questions"]:
+            q["difficulty"] = layer
+            q["layer"] = layer
         return result
     print(f"[LLM] 练习生成失败 (layer={layer})")
     return None
