@@ -54,13 +54,25 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """全局异常处理：防止未捕获异常导致500错误"""
+    """全局异常处理：防止未捕获异常导致500错误。
+    关键：手动注入 CORS 头，否则浏览器会把 5xx 误判为 CORS 拦截（fetch 网络层 fail）"""
     import traceback
     print(f"[GLOBAL EXCEPTION] {request.method} {request.url.path}: {exc}")
     traceback.print_exc()
+
+    # 取请求 Origin（Vercel 域名），回显成 Access-Control-Allow-Origin
+    origin = request.headers.get("origin", "")
+    allowed_origins = [o.strip() for o in CORS_ORIGINS.split(",")]
+    cors_origin = origin if origin in allowed_origins else (allowed_origins[0] if allowed_origins else "*")
+
     return JSONResponse(
         status_code=500,
         content={"detail": f"服务器内部错误，请稍后重试。错误: {str(exc)[:200]}"},
+        headers={
+            "Access-Control-Allow-Origin": cors_origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        },
     )
 
 
