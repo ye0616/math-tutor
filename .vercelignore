@@ -1,0 +1,10 @@
+# Ignore backend on Vercel - it's deployed separately on Railway
+backend/
+# Ignore deploy artifacts
+_deploy/
+*.zip
+*.bak
+_DEPLOY_CHECKLIST.md
+DEPLOY_RUNBOOK.md
+部署指南.md
+项目功能清单.md
