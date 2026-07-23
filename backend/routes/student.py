@@ -701,8 +701,20 @@ async def upload_error(
     except Exception:
         image_path = ""  # 图片保存失败不阻断流程
 
-    # 录入错题本
-    kp = knowledge_point.strip() or recognized.get("knowledge_point", "未分类")
+    # 录入错题本（防御性 .strip()：避免 knowledge_point 来自前端是 list/None 时崩溃）
+    def _safe_str(val, default: str = "") -> str:
+        if val is None:
+            return default
+        if isinstance(val, (list, tuple, set, dict)):
+            # 退化方案：list/dict 强制转 repr 上游通常已经被 _flatten_to_str 处理过
+            return str(val)
+        return str(val).strip()
+
+    kp = _safe_str(knowledge_point) or _safe_str(recognized.get("knowledge_point"), "未分类")
+    q_text = _safe_str(recognized.get("question_text"))
+    c_ans = _safe_str(recognized.get("correct_answer"))
+    analysis = _safe_str(recognized.get("analysis"))
+    e_type = _safe_str(recognized.get("error_type"), "计算错误")
     with get_db() as db:
         cursor = db.execute(
             "INSERT INTO error_notes "
@@ -712,12 +724,12 @@ async def upload_error(
             (
                 student_id,
                 None,  # question_id=NULL
-                recognized.get("question_text", ""),
+                q_text,
                 "",  # 学生答案（上传时未知）
-                recognized.get("correct_answer", ""),
-                recognized.get("analysis", ""),
+                c_ans,
+                analysis,
                 kp,
-                recognized.get("error_type", "计算错误"),
+                e_type,
                 "manual",  # source 标记为手动上传
                 0,
                 "unresolved",
@@ -729,11 +741,11 @@ async def upload_error(
 
     return {
         "id": note_id,
-        "question_text": recognized.get("question_text", ""),
-        "correct_answer": recognized.get("correct_answer", ""),
-        "analysis": recognized.get("analysis", ""),
+        "question_text": q_text,
+        "correct_answer": c_ans,
+        "analysis": analysis,
         "knowledge_point": kp,
-        "error_type": recognized.get("error_type", "计算错误"),
+        "error_type": e_type,
         "image_path": image_filename,
         "message": "错题已识别并录入错题本",
     }

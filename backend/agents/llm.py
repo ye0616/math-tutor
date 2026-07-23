@@ -1347,6 +1347,40 @@ def ai_judge_preview_answer(question_text: str, student_answer: str, correct_ans
     return {"is_correct": False, "explanation": f"正确答案：{correct_answer}。请再检查你的计算过程。", "normalized_answer": nc}
 
 
+def _flatten_to_str(value, default: str = "") -> str:
+    """把 LLM 返回的任意值归一为字符串。
+
+    智谱 GLM-4V-Flash 偶尔会返回：
+      - 嵌套 list（如 `["3.6×5", "3.6*5"]`）
+      - list of dict（如 `[{"text":"..."}]`）
+      - dict（如 `{"text": "..."}`）
+      - None / int / float
+
+    SQLite 不支持 list 入参，DB execute 会抛 `type 'list' is not supported`。
+    这里统一递归展平为 str，保证下游 SQL 安全。
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        # 优先取 text / value / content / answer 等常见键
+        for k in ("text", "value", "content", "answer", "label"):
+            if k in value and value[k] is not None:
+                return _flatten_to_str(value[k], default)
+        # 兜底把所有 value 拼接
+        parts = [_flatten_to_str(v, "") for v in value.values()]
+        return " | ".join(p for p in parts if p) or default
+    if isinstance(value, (list, tuple, set)):
+        parts = [_flatten_to_str(v, "") for v in value if v is not None]
+        # 用换行分隔多元素，AI 答案里看起来更自然
+        joined = "\n".join(p for p in parts if p)
+        return joined or default
+    return str(value)
+
+
 # ===== AI 识别学生上传的错题图片 =====
 def ai_recognize_student_error_image(image_base64: str) -> dict:
     """学生上传错题照片，AI识别题目内容并给出正确答案和知识点
@@ -1359,6 +1393,9 @@ def ai_recognize_student_error_image(image_base64: str) -> dict:
             "knowledge_point": "知识点",
             "error_type": "错误类型推测"
         }
+
+    注意：智谱 GLM-4V-Flash 偶尔返回 list / dict 嵌套字段，下游 SQLite 不支持，
+    故所有字段统一走 _flatten_to_str 归一为字符串。
     """
     system_msg = "你是小学数学AI助教。学生会拍照上传自己做错的题目，请识别题目内容、给出正确答案和解析。"
     user_msg = """请识别图片中的数学题目，并按以下JSON格式输出（不要其他文字）：
@@ -1389,13 +1426,18 @@ def ai_recognize_student_error_image(image_base64: str) -> dict:
         return {"question_text": "", "correct_answer": "", "analysis": "", "knowledge_point": "", "error_type": "识别失败"}
 
     result = _extract_json(raw)
+
+    # 容错 1：LLM 返回 list of dicts（多个候选）→ 取第一个
+    if isinstance(result, list):
+        result = result[0] if result and isinstance(result[0], dict) else None
+
     if result and isinstance(result, dict):
         return {
-            "question_text": result.get("question_text", ""),
-            "correct_answer": result.get("correct_answer", ""),
-            "analysis": result.get("analysis", ""),
-            "knowledge_point": result.get("knowledge_point", ""),
-            "error_type": result.get("error_type", "计算错误"),
+            "question_text": _flatten_to_str(result.get("question_text"), ""),
+            "correct_answer": _flatten_to_str(result.get("correct_answer"), ""),
+            "analysis": _flatten_to_str(result.get("analysis"), ""),
+            "knowledge_point": _flatten_to_str(result.get("knowledge_point"), ""),
+            "error_type": _flatten_to_str(result.get("error_type"), "计算错误"),
         }
 
     return {"question_text": "", "correct_answer": "", "analysis": "", "knowledge_point": "", "error_type": "识别失败"}
