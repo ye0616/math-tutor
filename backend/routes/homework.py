@@ -79,10 +79,32 @@ def upload_homework(
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
     # 创建数据库提交记录
+    # 修复：当 assignment_id=0（前端未选作业）时，按 lesson_title 在学生所在班级找最新 published 作业；
+    # 仍找不到则存 NULL（避开 FOREIGN KEY 约束）
+    bind_assignment_id = None  # 缺省 NULL（配合 PRAGMA foreign_keys=ON 时不会因 0 触发约束失败）
+    if assignment_id and assignment_id > 0:
+        bind_assignment_id = assignment_id
+    elif lesson_title:
+        with get_db() as db:
+            student_row = db.execute(
+                "SELECT class_id FROM users WHERE id=? AND role='student'",
+                (student_id,),
+            ).fetchone()
+            if student_row and student_row["class_id"]:
+                match = db.execute(
+                    """SELECT a.id FROM assignments a
+                       WHERE a.class_id=? AND a.status='published'
+                         AND (a.title=? OR a.unit_code=?)
+                       ORDER BY a.created_at DESC LIMIT 1""",
+                    (student_row["class_id"], lesson_title, lesson_title[:2] if len(lesson_title) >= 2 else ""),
+                ).fetchone()
+                if match:
+                    bind_assignment_id = match["id"]
+
     with get_db() as db:
         cursor = db.execute(
             "INSERT INTO homework_submissions (student_id, lesson_title, image_path, status, assignment_id) VALUES (?, ?, ?, ?, ?)",
-            (student_id, lesson_title, str(img_path), "pending", assignment_id),
+            (student_id, lesson_title, str(img_path), "pending", bind_assignment_id),
         )
         submission_id = cursor.lastrowid
 

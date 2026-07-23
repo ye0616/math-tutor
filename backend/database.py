@@ -466,7 +466,12 @@ def init_db():
     # 迁移：为 homework_submissions 表关联到 assignments
     hs_cols = [row[1] for row in cursor.execute("PRAGMA table_info(homework_submissions)").fetchall()]
     if 'assignment_id' not in hs_cols:
-        cursor.execute("ALTER TABLE homework_submissions ADD COLUMN assignment_id INTEGER DEFAULT 0")
+        # SQLite ALTER TABLE 不能加列带 DEFAULT NULL；分两步：先加列（默认会变成 0），再 UPDATE 清零为 NULL
+        cursor.execute("ALTER TABLE homework_submissions ADD COLUMN assignment_id INTEGER")
+    else:
+        # 老数据库里已有 assignment_id 列，把 0 全置 NULL，避免 FOREIGN KEY 约束失败
+        cursor.execute("UPDATE homework_submissions SET assignment_id=NULL WHERE assignment_id=0")
+        cursor.execute("UPDATE homework_submissions SET assignment_id=NULL WHERE assignment_id IS NOT NULL AND assignment_id NOT IN (SELECT id FROM assignments)")
 
     # 迁移：为 questions 表补充 lesson_code 和 knowledge_point 字段
     q_cols = [row[1] for row in cursor.execute("PRAGMA table_info(questions)").fetchall()]
