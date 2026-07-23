@@ -15,6 +15,7 @@ import {
   generateRandomChallenge, getRandomChallengeTask, submitRandomChallenge,
   askQA, getQATask, saveQASession, getQASimilar,
   RandomChallengeQuestion, QAResponse,
+  API_BASE,
 } from '@/lib/api';
 import XiaocongDialog from '@/components/XiaocongDialog';
 
@@ -389,7 +390,7 @@ function AssignmentContentCard({
         correct_answer: q.correct_answer || '',
       }));
       // 直接走 fetch（assignment-submit 还没封到 api.ts）
-      const res = await fetch('/api/homework/assignment-submit', {
+      const res = await fetch(`${API_BASE}/homework/assignment-submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({

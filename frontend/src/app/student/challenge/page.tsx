@@ -13,6 +13,7 @@ import {
   submitChallengeAnswer, submitSimilarAnswer,
   generateChallengeHint, getLessonStats, completeChallengeSession,
   type ChallengeResult, type ChallengeLevel, type ChallengeAnswerResult,
+  API_BASE,
 } from '@/lib/api';
 import XiaocongDialog from '@/components/XiaocongDialog';
 
@@ -313,7 +314,7 @@ export default function ChallengePage() {
         if (!sid && selectedUnit && user?.id) {
           // 兜底：查询该学生在该 unit 下的最新 active session
           try {
-            const res = await fetch(`/api/challenge/history/${user.id}`, {
+            const res = await fetch(`${API_BASE}/challenge/history/${user.id}`, {
               headers: { Authorization: `Bearer ${token}` },
             });
             if (res.ok) {

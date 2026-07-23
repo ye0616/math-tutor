@@ -8,7 +8,7 @@ import {
   Trophy, Flame, Crown, Sparkles, ChevronRight, Target, PawPrint,
   Loader2, RefreshCw, XCircle, Lightbulb, Gamepad2, Shield, Award,
 } from 'lucide-react';
-import { getStoredUser, getToken, fetchStudentDashboard, fetchPracticeQuestions, generateChallengeHint } from '@/lib/api';
+import { getStoredUser, getToken, fetchStudentDashboard, fetchPracticeQuestions, generateChallengeHint, API_BASE } from '@/lib/api';
 import XiaocongDialog from '@/components/XiaocongDialog';
 
 interface VenueInfo {
@@ -198,7 +198,7 @@ function StudentPractice() {
         form.append('student_answer', answer.trim());
         form.append('correct_answer', currentQ.correct_answer);
         form.append('knowledge_point', currentQ.knowledge_point || '');
-        const res = await fetch('/api/challenge/answer', {
+        const res = await fetch(`${API_BASE}/challenge/answer`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: form,
@@ -251,7 +251,7 @@ function StudentPractice() {
       form.append('correct_answer', currentQ.correct_answer);
       form.append('student_answer', answer || '');
       form.append('question', currentQ.question);
-      const res: any = await fetch('/api/challenge/hint', {
+      const res: any = await fetch(`${API_BASE}/challenge/hint`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,
