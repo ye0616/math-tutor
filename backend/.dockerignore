@@ -1,0 +1,16 @@
+# 不打包进镜像的文件
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+*.db
+*.sqlite3
+uploads/
+.venv/
+venv/
+.pytest_cache/
+tests/
+*.log

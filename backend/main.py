@@ -112,4 +112,5 @@ app.include_router(fun_games_router, prefix="/api/fun-games", tags=["趣味小�
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    # 云托管(CloudBase/容器)会注入 PORT 环境变量，本地默认 8000
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
